@@ -25,6 +25,7 @@ const editorDupWarning = document.getElementById("editor-dup-warning");
 const editorTitle = document.getElementById("editor-title");
 const editorVenue = document.getElementById("editor-venue");
 const editorDate = document.getElementById("editor-date");
+const editorTime = document.getElementById("editor-time");
 const editorUrl = document.getElementById("editor-url");
 const editorCancel = document.getElementById("editor-cancel");
 
@@ -246,6 +247,12 @@ function isDateString(v) {
   return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
 }
 
+function isTimeString(v) {
+  if (typeof v !== "string") return false;
+  const m = /^(\d{2}):(\d{2})$/.exec(v);
+  return !!m && +m[1] <= 23 && +m[2] <= 59;
+}
+
 // Valid dates earliest first (upcoming events read top-to-bottom); "unknown"
 // always last.
 function sortedKeys(keys) {
@@ -461,8 +468,10 @@ function displayUrl(entry) {
 }
 
 function thumbTooltip(entry) {
+  const time = formatTime(eventTimeKey(entry));
+  const head = [displayTitle(entry), displayVenue(entry)].filter(Boolean).join(" — ");
   return (
-    [displayTitle(entry), displayVenue(entry)].filter(Boolean).join(" — ") ||
+    [head, time].filter(Boolean).join(" · ") ||
     entry.caption ||
     entry.pageTitle ||
     ""
@@ -482,6 +491,36 @@ function eventDateKey(entry) {
   return "";
 }
 
+// The poster's start time as 24-hour "HH:MM", or "" if unknown. Precedence
+// mirrors the date: user override > structured event time > OCR-parsed time.
+function eventTimeKey(entry) {
+  if (isTimeString(entry.assignedTime)) return entry.assignedTime;
+  const structured = structuredStartTime(entry);
+  if (structured) return structured;
+  if (isTimeString(entry.ocrTime)) return entry.ocrTime;
+  return "";
+}
+
+// Pull HH:MM straight out of a structured startDate string (e.g.
+// "2026-08-15T19:00:00+10:00") rather than via Date(), which would shift it
+// into the viewer's timezone — we want the event's own local time.
+function structuredStartTime(entry) {
+  const s = entry.event?.startDate;
+  const m = typeof s === "string" && /t(\d{2}):(\d{2})/i.exec(s);
+  return m ? `${m[1]}:${m[2]}` : null;
+}
+
+// "19:30" -> "7:30 PM"; "20:00" -> "8 PM". For tooltips only.
+function formatTime(hhmm) {
+  const m = /^(\d{2}):(\d{2})$/.exec(hhmm || "");
+  if (!m) return "";
+  let h = +m[1];
+  const min = m[2];
+  const ap = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return min === "00" ? `${h} ${ap}` : `${h}:${min} ${ap}`;
+}
+
 // Edit mode: show the poster above, dock the form below; both close on
 // save/cancel.
 function openEditor(entry) {
@@ -489,6 +528,7 @@ function openEditor(entry) {
   editorTitle.value = displayTitle(entry);
   editorVenue.value = displayVenue(entry);
   editorDate.value = eventDateKey(entry);
+  editorTime.value = eventTimeKey(entry);
   editorUrl.value = displayUrl(entry);
   showDuplicateWarning(entry);
 
@@ -584,11 +624,13 @@ function wireControls() {
     if (!editingId) return;
     const id = editingId;
     const date = editorDate.value;
+    const time = editorTime.value;
     saveMetadata(id, {
       title: editorTitle.value,
       venue: editorVenue.value,
       url: editorUrl.value,
       assignedDate: isDateString(date) ? date : null,
+      assignedTime: isTimeString(time) ? time : null,
     });
     closeEditor();
   });

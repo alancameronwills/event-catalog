@@ -27,6 +27,7 @@ import {
   backfillHashes,
   backfillImages,
   isDateString,
+  isTimeString,
 } from "./store.js";
 
 const IMAGE_CONTENT_TYPES = {
@@ -99,6 +100,9 @@ async function handleUpdate(req, res, id) {
   }
   if ("assignedDate" in patch && patch.assignedDate !== null && !isDateString(patch.assignedDate)) {
     return sendJson(res, 400, { error: "assignedDate must be YYYY-MM-DD or null" });
+  }
+  if ("assignedTime" in patch && patch.assignedTime !== null && !isTimeString(patch.assignedTime)) {
+    return sendJson(res, 400, { error: "assignedTime must be HH:MM or null" });
   }
   const updated = await updateCapture(id, patch);
   if (!updated) return sendJson(res, 404, { error: "not found" });

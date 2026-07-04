@@ -6,6 +6,7 @@
 // signal).
 
 import fs from "node:fs/promises";
+import sharp from "sharp";
 import { createWorker } from "tesseract.js";
 import { config, paths } from "./config.js";
 
@@ -30,9 +31,24 @@ async function getWorker() {
 // working even if OCR is unavailable.
 export async function extractText(buffer) {
   if (!config.ocrEnabled) return "";
+
+  // Never hand Tesseract raw bytes. On input it can't decode it throws from
+  // inside its worker, and that error is re-thrown on the process — an
+  // *uncaught* exception that takes the whole server down. Decode + normalize
+  // with sharp first (the same thing that would just return null in hashing);
+  // if sharp can't read it, it isn't a usable image, so skip OCR. The greyscale
+  // PNG it emits is also cleaner input for recognition.
+  let image;
+  try {
+    image = await sharp(buffer).rotate().greyscale().png().toBuffer();
+  } catch (err) {
+    console.warn("OCR skipped — undecodable image:", err.message);
+    return "";
+  }
+
   const run = ocrChain.then(async () => {
     const worker = await getWorker();
-    const { data } = await worker.recognize(buffer);
+    const { data } = await worker.recognize(image);
     return (data.text || "").trim();
   });
   ocrChain = run.catch(() => {}); // keep the chain alive past failures
@@ -102,6 +118,55 @@ function* dateCandidates(text) {
     else { d = a; mon = b; } // ambiguous → day-first
     yield { d, m: mon, y: m[3] ? +m[3] : undefined };
   }
+}
+
+// --- Time parsing --------------------------------------------------------
+
+// Extract a likely event *start* time as 24-hour "HH:MM", or null. Posters
+// commonly print a range ("7pm–11pm", "7 to 11pm", "7-11PM"); we take the start
+// and ignore the end — often the meridiem sits only on the end time, so the
+// start borrows it. A bare number is ignored unless it carries am/pm or reads
+// as a colon clock, so dates ("7/8") and prices ("$15.00") aren't mistaken for
+// times.
+export function parseEventTime(text) {
+  if (!text) return null;
+  const t = text.toLowerCase().replace(/[–—]/g, "-"); // en/em dash → "-"
+
+  // start clock (+optional meridiem) then an optional range (separator + end
+  // clock + optional end meridiem). Spaces are tolerated around ":" for OCR.
+  const TIME = new RegExp(
+    "\\b(\\d{1,2})(?:\\s*([:.])\\s*(\\d{2}))?\\s*(a\\.?m\\.?|p\\.?m\\.?)?" +
+      "(?:\\s*(?:-|to|til|till|until|thru|through)\\s*" +
+      "(\\d{1,2})(?:\\s*[:.]\\s*(\\d{2}))?\\s*(a\\.?m\\.?|p\\.?m\\.?)?)?",
+    "gi"
+  );
+
+  for (const m of t.matchAll(TIME)) {
+    const [, hour, sep, min, startMer, , , endMer] = m;
+    const mer = normalizeMeridiem(startMer) || normalizeMeridiem(endMer);
+    // Only accept genuine times: am/pm present, or a colon-separated clock.
+    const isColonClock = sep === ":" && min !== undefined;
+    if (!mer && !isColonClock) continue;
+
+    const iso = toClock(hour, min, mer);
+    if (iso) return iso;
+  }
+  return null;
+}
+
+function normalizeMeridiem(m) {
+  return m ? m.replace(/\./g, "") : null; // "p.m." → "pm"
+}
+
+function toClock(hour, min, mer) {
+  let h = +hour;
+  const mm = min !== undefined ? +min : 0;
+  if (mm > 59) return null;
+  if (mer && h > 12) return null; // "19pm" is nonsense
+  if (mer === "pm" && h < 12) h += 12;
+  else if (mer === "am" && h === 12) h = 0;
+  if (h > 23) return null;
+  return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
 // Validate a candidate and produce YYYY-MM-DD, inferring/adjusting the year.

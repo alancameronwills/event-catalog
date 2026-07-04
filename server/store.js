@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { config, paths } from "./config.js";
 import { perceptualHash, hammingDistance } from "./hash.js";
-import { extractText, parseEventDate } from "./ocr.js";
+import { extractText, parseEventDate, parseEventTime } from "./ocr.js";
 
 const MIME_EXT = {
   "image/jpeg": "jpg",
@@ -70,6 +70,14 @@ export function isDateString(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+// A 24-hour clock time "HH:MM" (what <input type="time"> and parseEventTime
+// produce).
+export function isTimeString(value) {
+  if (typeof value !== "string") return false;
+  const m = /^(\d{2}):(\d{2})$/.exec(value);
+  return !!m && +m[1] <= 23 && +m[2] <= 59;
+}
+
 function parseDataUrl(dataUrl) {
   const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(dataUrl || "");
   if (!match) return null;
@@ -104,11 +112,14 @@ export async function addCapture(capture) {
     title: null,
     venue: null,
     url: null,
+    // Start time override (HH:MM); falls back to the structured/OCR time.
+    assignedTime: isTimeString(capture.assignedTime) ? capture.assignedTime : null,
     hash: null,
-    // OCR (step 4): text read off the poster + a date parsed from it, used as
-    // a fallback when there's no structured event date.
+    // OCR (step 4): text read off the poster + a date and start time parsed from
+    // it, used as a fallback when there's no structured event date/time.
     ocrText: null,
     ocrDate: null,
+    ocrTime: null,
     // Duplicate detection (step 3):
     duplicateOf: null,
     duplicateDistance: null,
@@ -118,18 +129,17 @@ export async function addCapture(capture) {
   if (decoded) {
     entry.hash = await perceptualHash(decoded.buffer);
 
-    // Read the poster text; if there's no structured event date, try to parse
-    // one from it. Do this before choosing the folder so the file lands in the
-    // date folder the entry will actually be grouped under. Skipped entirely
-    // when the user has already pinned a date by dropping onto it — there's no
-    // date to parse for, and OCR is the slow part of saving.
-    if (!entry.assignedDate) {
-      const text = await extractText(decoded.buffer);
-      if (text) {
-        entry.ocrText = text.slice(0, 5000);
-        if (!entry.event?.startDate) {
-          entry.ocrDate = parseEventDate(text, capturedAt);
-        }
+    // Read the poster text for a start time and (unless the date is already
+    // known) an event date. We OCR even when the date is pinned by a drop —
+    // there's still a time to pull off the poster — but skip the date parse in
+    // that case. Do this before choosing the folder so the file lands under the
+    // date the entry is actually grouped by.
+    const text = await extractText(decoded.buffer);
+    if (text) {
+      entry.ocrText = text.slice(0, 5000);
+      entry.ocrTime = parseEventTime(text);
+      if (!entry.assignedDate && !entry.event?.startDate) {
+        entry.ocrDate = parseEventDate(text, capturedAt);
       }
     }
 
@@ -228,10 +238,12 @@ export async function backfillImages() {
 
       let ocrText = null;
       let ocrDate = null;
+      let ocrTime = null;
       const text = await extractText(buffer);
       if (text) {
         ocrText = text.slice(0, 5000);
-        if (!entry.event?.startDate) ocrDate = parseEventDate(text, entry.capturedAt);
+        ocrTime = parseEventTime(text);
+        if (!entry.assignedDate && !entry.event?.startDate) ocrDate = parseEventDate(text, entry.capturedAt);
       }
 
       const folder = effectiveDate({ ...entry, hash, ocrDate });
@@ -240,7 +252,7 @@ export async function backfillImages() {
       await fs.mkdir(path.join(paths.imagesDir, folder), { recursive: true });
       await fs.writeFile(path.join(paths.imagesDir, rel), buffer);
 
-      updates.push({ id: entry.id, imageFile: rel, imageBytes: buffer.length, hash, ocrText, ocrDate });
+      updates.push({ id: entry.id, imageFile: rel, imageBytes: buffer.length, hash, ocrText, ocrDate, ocrTime });
     } catch (err) {
       console.warn(`backfill-image ${entry.id} failed:`, err.message);
       failed++;
@@ -323,6 +335,13 @@ export async function updateCapture(id, patch) {
             ? null
             : String(value).trim().slice(0, MAX[field]);
       }
+    }
+
+    // Start-time override: blank clears it; a bad value is ignored.
+    if ("assignedTime" in patch) {
+      const t = patch.assignedTime;
+      entry.assignedTime =
+        t == null || String(t).trim() === "" ? null : isTimeString(t) ? t : entry.assignedTime;
     }
 
     updated = entry;

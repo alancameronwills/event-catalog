@@ -43,8 +43,9 @@ Windows box; the Bash tool is Git Bash. `/tmp` resolves to `C:\tmp` for Node
   serialized** through `enqueueWrite` and written atomically (temp file +
   rename); keep new writes on that path.
 - `hash.js` — 64-bit dHash via `sharp` + Hamming distance.
-- `ocr.js` — Tesseract text extraction (one reused worker, serialized) and a
-  best-effort English date parser (`parseEventDate`).
+- `ocr.js` — Tesseract text extraction (one reused worker, serialized) and
+  best-effort English parsers for a date (`parseEventDate`) and a *start* time
+  (`parseEventTime`, 24h "HH:MM"; ranges like "7–11pm" keep the start).
 - `config.js` — env-configurable settings and derived `paths`.
 
 Data lives under `server/data/` (gitignored): `index.json` (array, newest
@@ -55,20 +56,27 @@ data), and `images/<YYYY-MM-DD>/<id>.<ext>`.
 `effectiveDate()` (server) and mirrored by `dateKey()` (panel):
 `assignedDate` → structured `event.startDate` → `ocrDate` → capture date.
 Keep these two in sync when you touch date logic. A capture POSTed with an
-`assignedDate` (drag-to-add in the panel) pins that date and makes `addCapture`
-skip OCR — there's no date to parse for, and OCR is the slow part of a save.
+`assignedDate` (drag-to-add in the panel) pins that date, so `addCapture` skips
+the *date* parse — but it still OCRs to pull a **start time** off the poster.
+
+**Start time** is a separate, display-only value (it doesn't affect the folder):
+precedence `assignedTime` → the time in structured `event.startDate` →
+`ocrTime`, surfaced by `eventTimeKey()` in the panel and editable via the
+editor's Time field.
 
 An index entry: `id, capturedAt, assignedDate, eventDate, imageFile, imageUrl,
 caption, event{name,startDate,endDate,venue}, pageUrl, pageTitle, title, venue,
-url, hash, ocrText, ocrDate, duplicateOf, duplicateDistance`. `title/venue/url`
-are user overrides that fall back to scraped values in the UI.
+url, assignedTime, hash, ocrText, ocrDate, ocrTime, duplicateOf,
+duplicateDistance`. `title/venue/url/assignedTime` are user overrides that fall
+back to scraped/OCR'd values in the UI.
 
 ### HTTP API
 
 `GET /health`, `GET|POST /captures` (POST accepts an optional `assignedDate` to
-pin the date and skip OCR), `PATCH /captures/:id` (assignedDate moves the file;
-title/venue/url are metadata), `DELETE /captures/:id`, `GET|POST /dates`,
-`DELETE /dates/:date`, `POST /backfill-images`, `GET /images/<folder>/<file>`.
+pin the date — still OCRs for a start time), `PATCH /captures/:id` (assignedDate
+moves the file; title/venue/url/assignedTime are metadata), `DELETE
+/captures/:id`, `GET|POST /dates`, `DELETE /dates/:date`, `POST
+/backfill-images`, `GET /images/<folder>/<file>`.
 
 ## Extension notes
 
@@ -85,8 +93,8 @@ title/venue/url are metadata), `DELETE /captures/:id`, `GET|POST /dates`,
   **month** sections (earliest first; the current month starts open, others
   collapsed, and toggles persist across re-renders via `monthState`). Also:
   drag/copy-paste to move posters between dates, click-to-enlarge lightbox, a
-  bottom-docked edit form (title/venue/date/url + duplicate warning) that also
-  opens on capture, and delete. Server is the source of truth; pending local
+  bottom-docked edit form (title/venue/date/time/url + duplicate warning) that
+  also opens on capture, and delete. Server is the source of truth; pending local
   captures merge on top. Two behaviors worth knowing:
     - **Prune on open** — `pruneOutdated()` runs once on load and *permanently
       deletes* every capture whose effective date is before today (plus stale

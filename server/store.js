@@ -114,6 +114,9 @@ export async function addCapture(capture) {
     url: null,
     // Start time override (HH:MM); falls back to the structured/OCR time.
     assignedTime: isTimeString(capture.assignedTime) ? capture.assignedTime : null,
+    // Optional end date (YYYY-MM-DD) for multi-day events; null = single day.
+    // Metadata only — it doesn't affect the folder/grouping (that's the start).
+    assignedEndDate: isDateString(capture.assignedEndDate) ? capture.assignedEndDate : null,
     hash: null,
     // OCR (step 4): text read off the poster + a date and start time parsed from
     // it, used as a fallback when there's no structured event date/time.
@@ -347,6 +350,14 @@ export async function updateCapture(id, patch) {
       const t = patch.assignedTime;
       entry.assignedTime =
         t == null || String(t).trim() === "" ? null : isTimeString(t) ? t : entry.assignedTime;
+    }
+
+    // Optional end date (multi-day events): blank clears it; a bad value is
+    // ignored. Doesn't move the file — grouping is by the start date.
+    if ("assignedEndDate" in patch) {
+      const d = patch.assignedEndDate;
+      entry.assignedEndDate =
+        d == null || String(d).trim() === "" ? null : isDateString(d) ? d : entry.assignedEndDate;
     }
 
     if ("venue" in patch && entry.venue) venueToRecord = entry.venue;

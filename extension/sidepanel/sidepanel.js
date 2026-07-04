@@ -25,6 +25,7 @@ const editorDupWarning = document.getElementById("editor-dup-warning");
 const editorTitle = document.getElementById("editor-title");
 const editorVenue = document.getElementById("editor-venue");
 const editorDate = document.getElementById("editor-date");
+const editorEndDate = document.getElementById("editor-end-date");
 const editorTime = document.getElementById("editor-time");
 const editorUrl = document.getElementById("editor-url");
 const editorCancel = document.getElementById("editor-cancel");
@@ -539,8 +540,10 @@ function populateVenueSuggestions(captures, venues) {
 function thumbTooltip(entry) {
   const time = formatTime(eventTimeKey(entry));
   const head = [displayTitle(entry), displayVenue(entry)].filter(Boolean).join(" — ");
+  const endKey = eventEndDateKey(entry);
+  const until = endKey ? `until ${formatDateKey(endKey)}` : "";
   return (
-    [head, time].filter(Boolean).join(" · ") ||
+    [head, time, until].filter(Boolean).join(" · ") ||
     entry.caption ||
     entry.pageTitle ||
     ""
@@ -557,6 +560,19 @@ function eventDateKey(entry) {
     return structured.toISOString().slice(0, 10);
   }
   if (isDateString(entry.ocrDate)) return entry.ocrDate;
+  return "";
+}
+
+// The event's end date (multi-day events) as YYYY-MM-DD, or "" for single-day.
+// Precedence: user override > structured event end date. No OCR/capture fallback
+// — absence means single-day.
+function eventEndDateKey(entry) {
+  if (isDateString(entry.assignedEndDate)) return entry.assignedEndDate;
+  const s = entry.event?.endDate;
+  const structured = new Date(s);
+  if (s && !Number.isNaN(structured.getTime())) {
+    return structured.toISOString().slice(0, 10);
+  }
   return "";
 }
 
@@ -597,6 +613,8 @@ function openEditor(entry) {
   editorTitle.value = displayTitle(entry);
   editorVenue.value = displayVenue(entry);
   editorDate.value = eventDateKey(entry);
+  editorEndDate.value = eventEndDateKey(entry);
+  editorEndDate.min = editorDate.value || ""; // can't end before it starts
   editorTime.value = eventTimeKey(entry);
   editorUrl.value = displayUrl(entry);
   showDuplicateWarning(entry);
@@ -694,16 +712,25 @@ function wireControls() {
     const id = editingId;
     const date = editorDate.value;
     const time = editorTime.value;
+    const end = editorEndDate.value;
     saveMetadata(id, {
       title: editorTitle.value,
       venue: editorVenue.value,
       url: editorUrl.value,
       assignedDate: isDateString(date) ? date : null,
       assignedTime: isTimeString(time) ? time : null,
+      // Only keep an end date that's a real date after the start; anything else
+      // (blank, or on/before the start) means single-day.
+      assignedEndDate:
+        isDateString(end) && isDateString(date) && end > date ? end : null,
     });
     closeEditor();
   });
   editorCancel.addEventListener("click", closeEditor);
+  // Keep the end date from preceding the start as the start is edited.
+  editorDate.addEventListener("change", () => {
+    editorEndDate.min = editorDate.value || "";
+  });
 
   document.addEventListener("keydown", onKeydown);
 
@@ -896,8 +923,10 @@ async function pruneOutdated() {
   const today = todayKey();
 
   const outdated = captures.filter((e) => {
-    const key = dateKey(e);
-    return key !== "unknown" && key < today; // "unknown" has no date to judge
+    // Judge by the end date for multi-day events, else the start date, so an
+    // event still running today isn't removed. "unknown" has no date to judge.
+    const key = eventEndDateKey(e) || dateKey(e);
+    return key !== "unknown" && key < today;
   });
   for (const entry of outdated) await purgeCapture(entry.id);
 

@@ -107,6 +107,9 @@ async function handleUpdate(req, res, id) {
   if ("assignedTime" in patch && patch.assignedTime !== null && !isTimeString(patch.assignedTime)) {
     return sendJson(res, 400, { error: "assignedTime must be HH:MM or null" });
   }
+  if ("assignedEndDate" in patch && patch.assignedEndDate !== null && !isDateString(patch.assignedEndDate)) {
+    return sendJson(res, 400, { error: "assignedEndDate must be YYYY-MM-DD or null" });
+  }
   const updated = await updateCapture(id, patch);
   if (!updated) return sendJson(res, 404, { error: "not found" });
   const { imageBytes, ...clean } = updated;

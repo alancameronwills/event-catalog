@@ -90,7 +90,9 @@ export async function addCapture(capture) {
   const entry = {
     id,
     capturedAt,
-    assignedDate: null,
+    // Captures dropped onto a specific date in the panel arrive with the date
+    // already pinned; honor it so the poster lands where it was dropped.
+    assignedDate: isDateString(capture.assignedDate) ? capture.assignedDate : null,
     eventDate: capture.event?.startDate || null,
     imageFile: null,
     imageUrl: capture.imageUrl || null,
@@ -118,12 +120,16 @@ export async function addCapture(capture) {
 
     // Read the poster text; if there's no structured event date, try to parse
     // one from it. Do this before choosing the folder so the file lands in the
-    // date folder the entry will actually be grouped under.
-    const text = await extractText(decoded.buffer);
-    if (text) {
-      entry.ocrText = text.slice(0, 5000);
-      if (!entry.event?.startDate) {
-        entry.ocrDate = parseEventDate(text, capturedAt);
+    // date folder the entry will actually be grouped under. Skipped entirely
+    // when the user has already pinned a date by dropping onto it — there's no
+    // date to parse for, and OCR is the slow part of saving.
+    if (!entry.assignedDate) {
+      const text = await extractText(decoded.buffer);
+      if (text) {
+        entry.ocrText = text.slice(0, 5000);
+        if (!entry.event?.startDate) {
+          entry.ocrDate = parseEventDate(text, capturedAt);
+        }
       }
     }
 

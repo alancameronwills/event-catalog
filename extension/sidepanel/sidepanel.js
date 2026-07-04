@@ -35,8 +35,12 @@ let focusedDate = null; // group targeted for paste
 let draggingActive = false;
 let entriesById = new Map(); // id -> entry, refreshed each render
 let editingId = null; // poster whose metadata is open in the editor
+const monthState = new Map(); // "YYYY-MM"|"unknown" -> open? (persists re-renders)
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  // Opening the catalog is the moment to clear out events that have already
+  // passed (see pruneOutdated); then draw what's left.
+  await pruneOutdated();
   render();
   wireControls();
 });
@@ -45,7 +49,8 @@ document.addEventListener("DOMContentLoaded", () => {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "CAPTURE_ADDED") {
     // Open the editor immediately on a fresh capture so details can be added
-    // while the poster is in view.
+    // while the poster is in view. Make sure its month is expanded first.
+    if (message.entry) openMonthFor(dateKey(message.entry));
     render().then(() => {
       if (message.entry) openEditor(message.entry);
     });
@@ -107,7 +112,11 @@ async function render() {
     ? `${captures.length} ${captures.length === 1 ? "capture" : "captures"}`
     : "";
 
-  for (const group of catalogEl.querySelectorAll(".date-group")) group.remove();
+  // Drop previously-rendered content (top-level month sections and the
+  // always-visible "unknown" group).
+  for (const el of catalogEl.querySelectorAll(":scope > .month, :scope > .date-group")) {
+    el.remove();
+  }
 
   // Group items by stable date key, then ensure created (possibly empty) dates
   // each have a group.
@@ -128,9 +137,94 @@ async function render() {
   }
   emptyEl.hidden = true;
 
+  // Bucket date keys (earliest first, "unknown" last) into calendar months so
+  // the list reads as collapsible month sections.
+  const months = new Map(); // monthKey -> [dateKey, ...]
   for (const key of sortedKeys(groups.keys())) {
-    catalogEl.appendChild(renderGroup(key, groups.get(key), createdSet));
+    const mKey = monthKeyOf(key);
+    if (!months.has(mKey)) months.set(mKey, []);
+    months.get(mKey).push(key);
   }
+
+  for (const [mKey, dateKeys] of months) {
+    if (mKey === "unknown") {
+      // No real month to fold under; render the group on its own at the end.
+      for (const key of dateKeys) {
+        catalogEl.appendChild(renderGroup(key, groups.get(key), createdSet));
+      }
+    } else {
+      catalogEl.appendChild(renderMonth(mKey, dateKeys, groups, createdSet));
+    }
+  }
+}
+
+// --- Month grouping ------------------------------------------------------
+
+function monthKeyOf(key) {
+  return key === "unknown" ? "unknown" : key.slice(0, 7);
+}
+
+function currentMonthKey() {
+  return todayKey().slice(0, 7);
+}
+
+// Whether a month section is expanded. First sighting defaults to open for the
+// current month, collapsed otherwise; user toggles then persist across renders.
+function isMonthOpen(mKey) {
+  if (!monthState.has(mKey)) monthState.set(mKey, mKey === currentMonthKey());
+  return monthState.get(mKey);
+}
+
+// Force a month open — used when something lands in it (new capture, move, or
+// a freshly added date) so the change is actually visible.
+function openMonthFor(key) {
+  monthState.set(monthKeyOf(key), true);
+}
+
+function formatMonthKey(mKey) {
+  const [y, m] = mKey.split("-").map(Number);
+  const d = new Date(y, m - 1, 1);
+  if (Number.isNaN(d.getTime())) return mKey;
+  return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
+function renderMonth(mKey, dateKeys, groups, createdSet) {
+  const section = document.createElement("section");
+  section.className = "month";
+  section.dataset.month = mKey;
+  if (!isMonthOpen(mKey)) section.classList.add("collapsed");
+
+  const header = document.createElement("button");
+  header.type = "button";
+  header.className = "month-header";
+
+  const chevron = document.createElement("span");
+  chevron.className = "month-chevron";
+  chevron.textContent = "▸";
+
+  const label = document.createElement("span");
+  label.className = "month-label";
+  label.textContent = formatMonthKey(mKey);
+
+  const count = document.createElement("span");
+  count.className = "month-count";
+  const n = dateKeys.reduce((sum, k) => sum + groups.get(k).length, 0);
+  count.textContent = n ? String(n) : "";
+
+  header.append(chevron, label, count);
+  header.addEventListener("click", () => {
+    const collapsed = section.classList.toggle("collapsed");
+    monthState.set(mKey, !collapsed);
+  });
+  section.appendChild(header);
+
+  const body = document.createElement("div");
+  body.className = "month-body";
+  for (const key of dateKeys) {
+    body.appendChild(renderGroup(key, groups.get(key), createdSet));
+  }
+  section.appendChild(body);
+  return section;
 }
 
 // Stable YYYY-MM-DD key. Precedence: explicit assignment > structured event
@@ -152,12 +246,13 @@ function isDateString(v) {
   return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
 }
 
-// Valid dates newest first; "unknown" always last.
+// Valid dates earliest first (upcoming events read top-to-bottom); "unknown"
+// always last.
 function sortedKeys(keys) {
   return [...keys].sort((a, b) => {
     if (a === "unknown") return 1;
     if (b === "unknown") return -1;
-    return a < b ? 1 : a > b ? -1 : 0;
+    return a < b ? -1 : a > b ? 1 : 0;
   });
 }
 
@@ -293,9 +388,11 @@ function wireGroupTarget(section, key) {
   section.addEventListener("click", () => setFocusedDate(key));
 
   section.addEventListener("dragover", (e) => {
-    if (!draggingActive) return;
+    // Accept both an internal poster move and an image dragged in from a page
+    // or the file system.
+    if (!draggingActive && !isImageDrag(e.dataTransfer)) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
+    e.dataTransfer.dropEffect = draggingActive ? "move" : "copy";
     section.classList.add("drop-target");
   });
   section.addEventListener("dragleave", (e) => {
@@ -304,9 +401,24 @@ function wireGroupTarget(section, key) {
   section.addEventListener("drop", (e) => {
     e.preventDefault();
     section.classList.remove("drop-target");
-    const id = e.dataTransfer.getData("text/plain");
-    if (id) moveEntry(id, key);
+    if (draggingActive) {
+      const id = e.dataTransfer.getData("text/plain");
+      if (id) moveEntry(id, key);
+      return;
+    }
+    // A poster dropped onto this date: capture it here, pinned to this date
+    // (no date parsing — the drop location is the date).
+    addDroppedImage(e.dataTransfer, key);
   });
+}
+
+// True when a drag carries an image (a file, or an <img>/URL from a page). Used
+// to light up date groups as drop targets for capture-by-drop.
+function isImageDrag(dt) {
+  if (!dt) return false;
+  return [...dt.types].some(
+    (t) => t === "Files" || t === "text/uri-list" || t === "text/html"
+  );
 }
 
 // --- Interactions --------------------------------------------------------
@@ -483,6 +595,16 @@ function wireControls() {
   editorCancel.addEventListener("click", closeEditor);
 
   document.addEventListener("keydown", onKeydown);
+
+  // Swallow image drops that miss a date group so the panel never navigates
+  // away to the dropped image's URL. Valid drops are handled by the group's own
+  // listener (which runs first, in the target phase) before this fires.
+  document.addEventListener("dragover", (e) => {
+    if (!draggingActive && isImageDrag(e.dataTransfer)) e.preventDefault();
+  });
+  document.addEventListener("drop", (e) => {
+    if (!draggingActive && isImageDrag(e.dataTransfer)) e.preventDefault();
+  });
 }
 
 function onKeydown(e) {
@@ -537,6 +659,7 @@ async function moveEntry(id, date) {
     showStatus("Server offline — move saved locally.");
   }
   focusedDate = date;
+  openMonthFor(date);
   await render();
 }
 
@@ -579,6 +702,7 @@ async function addDate(date) {
     await addLocalDate(date);
     showStatus("Server offline — date saved locally.");
   }
+  openMonthFor(date);
   await render();
 }
 
@@ -631,6 +755,165 @@ async function removeLocalDate(date) {
   await chrome.storage.local.set({
     [CREATED_DATES_KEY]: local.filter((d) => d !== date),
   });
+}
+
+// --- Prune past events ---------------------------------------------------
+
+// Today as a local YYYY-MM-DD (matches how users think about "out of date",
+// and comparable against the string date keys).
+function todayKey() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Permanently delete captures whose effective date is before today, and drop
+// any now-stale empty user-created dates. Runs once when the panel opens.
+async function pruneOutdated() {
+  const [captures, createdDates] = await Promise.all([
+    loadCaptures(),
+    loadCreatedDates(),
+  ]);
+  const today = todayKey();
+
+  const outdated = captures.filter((e) => {
+    const key = dateKey(e);
+    return key !== "unknown" && key < today; // "unknown" has no date to judge
+  });
+  for (const entry of outdated) await purgeCapture(entry.id);
+
+  // Remove empty created dates in the past; keep any that still hold a poster
+  // (those posters were just deleted above, so recompute what survives).
+  const removedIds = new Set(outdated.map((e) => e.id));
+  const liveKeys = new Set(
+    captures.filter((e) => !removedIds.has(e.id)).map(dateKey)
+  );
+  for (const date of createdDates) {
+    if (date < today && !liveKeys.has(date)) await purgeDate(date);
+  }
+}
+
+// Delete a capture from the server and local storage without touching the UI
+// (prune runs before the first render).
+async function purgeCapture(id) {
+  try {
+    const res = await fetch(`${SERVER_URL}/captures/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok && res.status !== 404) throw new Error(`server responded ${res.status}`);
+  } catch {
+    // Offline (or already gone): still drop the local copy below.
+  }
+  await removeLocalEntry(id);
+}
+
+async function purgeDate(date) {
+  try {
+    await fetch(`${SERVER_URL}/dates/${encodeURIComponent(date)}`, { method: "DELETE" });
+  } catch {
+    // Offline: local removal below still applies.
+  }
+  await removeLocalDate(date);
+}
+
+// --- Capture by drop -----------------------------------------------------
+
+// Turn an image dropped onto a date group into a capture pinned to that date.
+async function addDroppedImage(dataTransfer, date) {
+  try {
+    const imageDataUrl = await readDroppedImage(dataTransfer);
+    if (!imageDataUrl) {
+      showStatus("Couldn't read an image from that drop.");
+      return;
+    }
+    await saveDroppedCapture(imageDataUrl, date);
+  } catch (err) {
+    showStatus(`Drop failed: ${err.message || err}`);
+  }
+}
+
+// Resolve a drop into an image data URL: a dropped file directly, or the bytes
+// of an image dragged from a page (fetched here — the panel is an extension
+// page with host permissions for Facebook/fbcdn, so it isn't CORS-blocked).
+async function readDroppedImage(dataTransfer) {
+  const file = [...(dataTransfer.files || [])].find((f) =>
+    f.type.startsWith("image/")
+  );
+  if (file) return await blobToDataUrl(file);
+
+  const url = imageUrlFromDrag(dataTransfer);
+  if (url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`image fetch responded ${res.status}`);
+    const blob = await res.blob();
+    if (!blob.type.startsWith("image/")) throw new Error("that link wasn't an image");
+    return await blobToDataUrl(blob);
+  }
+  return null;
+}
+
+// Pull an image URL out of a page drag (uri-list, then an <img> in the HTML
+// fragment, then a bare URL in plain text).
+function imageUrlFromDrag(dt) {
+  const uriList = dt.getData("text/uri-list");
+  if (uriList) {
+    const first = uriList
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l && !l.startsWith("#"));
+    if (first) return first;
+  }
+  const html = dt.getData("text/html");
+  if (html) {
+    const m = /<img[^>]+src=["']([^"']+)["']/i.exec(html);
+    if (m) return m[1];
+  }
+  const plain = dt.getData("text/plain");
+  if (plain && /^https?:\/\//i.test(plain.trim())) return plain.trim();
+  return null;
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("could not read image"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+// POST a dropped capture with its date already pinned (assignedDate), so the
+// server skips date parsing and files it under this date.
+async function saveDroppedCapture(imageDataUrl, date) {
+  const entry = {
+    id: crypto.randomUUID(),
+    capturedAt: new Date().toISOString(),
+    assignedDate: date,
+    imageDataUrl,
+  };
+  try {
+    const res = await fetch(`${SERVER_URL}/captures`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry),
+    });
+    if (!res.ok) throw new Error(`server responded ${res.status}`);
+  } catch {
+    // Offline: keep it locally so nothing is lost (mirrors background.js).
+    await storeLocalCapture({ ...entry, pending: true });
+    showStatus("Server offline — poster saved locally.");
+  }
+  focusedDate = date;
+  openMonthFor(date);
+  await render();
+}
+
+async function storeLocalCapture(entry) {
+  const { [STORAGE_KEY]: local = [] } = await chrome.storage.local.get(STORAGE_KEY);
+  local.unshift(entry);
+  await chrome.storage.local.set({ [STORAGE_KEY]: local });
 }
 
 // --- Helpers -------------------------------------------------------------

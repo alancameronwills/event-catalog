@@ -54,7 +54,9 @@ data), and `images/<YYYY-MM-DD>/<id>.<ext>`.
 **Effective date** (folder + grouping key) precedence, defined in
 `effectiveDate()` (server) and mirrored by `dateKey()` (panel):
 `assignedDate` → structured `event.startDate` → `ocrDate` → capture date.
-Keep these two in sync when you touch date logic.
+Keep these two in sync when you touch date logic. A capture POSTed with an
+`assignedDate` (drag-to-add in the panel) pins that date and makes `addCapture`
+skip OCR — there's no date to parse for, and OCR is the slow part of a save.
 
 An index entry: `id, capturedAt, assignedDate, eventDate, imageFile, imageUrl,
 caption, event{name,startDate,endDate,venue}, pageUrl, pageTitle, title, venue,
@@ -63,10 +65,10 @@ are user overrides that fall back to scraped values in the UI.
 
 ### HTTP API
 
-`GET /health`, `GET|POST /captures`, `PATCH /captures/:id` (assignedDate moves
-the file; title/venue/url are metadata), `DELETE /captures/:id`,
-`GET|POST /dates`, `DELETE /dates/:date`, `POST /backfill-images`,
-`GET /images/<folder>/<file>`.
+`GET /health`, `GET|POST /captures` (POST accepts an optional `assignedDate` to
+pin the date and skip OCR), `PATCH /captures/:id` (assignedDate moves the file;
+title/venue/url are metadata), `DELETE /captures/:id`, `GET|POST /dates`,
+`DELETE /dates/:date`, `POST /backfill-images`, `GET /images/<folder>/<file>`.
 
 ## Extension notes
 
@@ -79,10 +81,22 @@ the file; title/venue/url are metadata), `DELETE /captures/:id`,
   `srcset`, scrapes caption + JSON-LD event data. Wrapped in a guarded IIFE so
   it's safe to inject more than once (the SW injects on demand into tabs that
   predate the extension). It does **not** fetch bytes.
-- `sidepanel/` — the catalog UI: date-grouped grid, drag/copy-paste to move
-  posters between dates, click-to-enlarge lightbox, a bottom-docked edit form
-  (title/venue/date/url + duplicate warning) that also opens on capture, and
-  delete. Server is the source of truth; pending local captures merge on top.
+- `sidepanel/` — the catalog UI: a date-grouped grid bucketed into collapsible
+  **month** sections (earliest first; the current month starts open, others
+  collapsed, and toggles persist across re-renders via `monthState`). Also:
+  drag/copy-paste to move posters between dates, click-to-enlarge lightbox, a
+  bottom-docked edit form (title/venue/date/url + duplicate warning) that also
+  opens on capture, and delete. Server is the source of truth; pending local
+  captures merge on top. Two behaviors worth knowing:
+    - **Prune on open** — `pruneOutdated()` runs once on load and *permanently
+      deletes* every capture whose effective date is before today (plus stale
+      empty dates). Destructive by design; "unknown"-dated items are spared.
+    - **Drag-to-add** — dropping an image file, or an image dragged from a page,
+      onto a date group captures it there (POST with `assignedDate` set). Page
+      drags are fetched in the panel itself: it's an extension page with the
+      fbcdn/facebook `host_permissions`, so it isn't CORS-blocked the way a
+      content script would be. A document-level drop guard stops a stray drop
+      from navigating the panel to the image URL.
 
 Facebook's DOM changes often — the image path is robust, but caption/date
 scraping is expected to need occasional maintenance.

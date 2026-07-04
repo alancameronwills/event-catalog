@@ -22,10 +22,14 @@ body {
   background: var(--bg);
 }
 
-.panel-header {
+/* Header + add-date form pinned together beneath the top of the panel. */
+.panel-top {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
+}
+
+.panel-header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -114,6 +118,61 @@ body {
   text-align: center;
   line-height: 1.5;
   margin-top: 40px;
+}
+
+/* Month grouping: a clickable header that expands/collapses its date groups. */
+.month {
+  margin-bottom: 16px;
+}
+
+.month-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 6px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.month-header:hover {
+  color: var(--accent);
+}
+
+.month-chevron {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--muted);
+  transition: transform 0.12s;
+}
+
+.month:not(.collapsed) .month-chevron {
+  transform: rotate(90deg);
+}
+
+.month-label {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+.month-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.month-body {
+  padding-top: 10px;
+}
+
+.month.collapsed .month-body {
+  display: none;
 }
 
 .date-group {

@@ -7,19 +7,23 @@
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
-    <header class="panel-header">
-      <h1>Event Catalog</h1>
-      <div class="header-right">
-        <span id="count" class="count" aria-live="polite"></span>
-        <button id="add-date-btn" class="btn" type="button">+ New date</button>
-      </div>
-    </header>
+    <!-- Header and the add-date form stay pinned together at the top; the form
+         drops in beneath the header rather than scrolling away with the list. -->
+    <div class="panel-top">
+      <header class="panel-header">
+        <h1>Event Catalog</h1>
+        <div class="header-right">
+          <span id="count" class="count" aria-live="polite"></span>
+          <button id="add-date-btn" class="btn" type="button">+ New date</button>
+        </div>
+      </header>
 
-    <form id="add-date-form" class="add-date-form" hidden>
-      <input type="date" id="add-date-input" required />
-      <button type="submit" class="btn">Add</button>
-      <button type="button" id="add-date-cancel" class="btn btn-plain">Cancel</button>
-    </form>
+      <form id="add-date-form" class="add-date-form" hidden>
+        <input type="date" id="add-date-input" required />
+        <button type="submit" class="btn">Add</button>
+        <button type="button" id="add-date-cancel" class="btn btn-plain">Cancel</button>
+      </form>
+    </div>
 
     <p id="status" class="status" hidden></p>
 

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Event Catalog</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="panel-header">
+      <h1>Event Catalog</h1>
+      <div class="header-right">
+        <span id="count" class="count" aria-live="polite"></span>
+        <button id="add-date-btn" class="btn" type="button">+ New date</button>
+      </div>
+    </header>
+
+    <form id="add-date-form" class="add-date-form" hidden>
+      <input type="date" id="add-date-input" required />
+      <button type="submit" class="btn">Add</button>
+      <button type="button" id="add-date-cancel" class="btn btn-plain">Cancel</button>
+    </form>
+
+    <p id="status" class="status" hidden></p>
+
+    <p id="hint" class="hint" hidden></p>
+
+    <main id="catalog" class="catalog">
+      <p id="empty" class="empty">
+        No captures yet. Right-click an event poster on Facebook and choose
+        <strong>&ldquo;Add to event catalog&rdquo;</strong>.
+      </p>
+    </main>
+
+    <!-- Enlarged poster fills the space above; when editing, the form docks
+         below it and both close together on save/cancel. -->
+    <div id="lightbox" class="lightbox" hidden>
+      <div class="lightbox-image">
+        <img id="lightbox-img" alt="Enlarged poster" />
+      </div>
+      <form id="editor-form" class="editor-card" hidden>
+        <p id="editor-dup-warning" class="dup-warning" hidden></p>
+        <div class="editor-fields">
+          <label>Title <input type="text" id="editor-title" autocomplete="off" /></label>
+          <label>Venue <input type="text" id="editor-venue" autocomplete="off" /></label>
+          <label>Date <input type="date" id="editor-date" /></label>
+          <label>URL <input type="url" id="editor-url" autocomplete="off" placeholder="https://…" /></label>
+        </div>
+        <div class="editor-actions">
+          <button type="submit" class="btn">Save</button>
+          <button type="button" id="editor-cancel" class="btn btn-plain">Cancel</button>
+        </div>
+      </form>
+    </div>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

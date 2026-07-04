@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Event Poster Catalog",
+  "version": "0.1.0",
+  "description": "Assisted capture of Facebook event posters into a local, date-organized catalog with duplicate detection.",
+  "permissions": [
+    "contextMenus",
+    "sidePanel",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://web.facebook.com/*",
+    "https://*.fbcdn.net/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://web.facebook.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "action": {
+    "default_title": "Open Event Catalog"
+  },
+  "commands": {
+    "capture-hovered-image": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+E"
+      },
+      "description": "Capture the image under the cursor to the event catalog"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "event-catalog-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local server that receives event-poster captures from the browser extension, stores images on disk, and maintains a JSON index.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "sharp": "^0.35.3",
+    "tesseract.js": "^7.0.0"
+  }
+}

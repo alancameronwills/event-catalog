@@ -1,0 +1,352 @@
+:root {
+  --bg: #f5f6f7;
+  --card: #ffffff;
+  --border: #dcdfe3;
+  --text: #1c1e21;
+  --muted: #65676b;
+  --accent: #1877f2;
+  --warn-bg: #fff4e5;
+  --warn-border: #f0b429;
+  --warn-text: #8a5a00;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.panel-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-header h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.count {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: #eef0f2;
+}
+
+.btn-plain {
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.add-date-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.add-date-form input[type="date"] {
+  font: inherit;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.hint {
+  margin: 0;
+  padding: 8px 14px;
+  background: #eaf3ff;
+  border-bottom: 1px solid #cfe2ff;
+  color: #0a4da0;
+  font-size: 12px;
+}
+
+.status {
+  margin: 0;
+  padding: 8px 14px;
+  background: var(--warn-bg);
+  border-bottom: 1px solid var(--warn-border);
+  color: var(--warn-text);
+  font-size: 13px;
+}
+
+.catalog {
+  padding: 12px;
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.5;
+  margin-top: 40px;
+}
+
+.date-group {
+  margin-bottom: 20px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.date-group.focused {
+  border-color: var(--accent);
+  background: rgba(24, 119, 242, 0.04);
+}
+
+.date-group.drop-target {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: rgba(24, 119, 242, 0.08);
+}
+
+.date-group h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.date-del {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.date-del:hover {
+  color: #d33;
+}
+
+.drop-hint {
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 60px);
+  gap: 6px;
+}
+
+.thumb {
+  position: relative;
+  margin: 0; /* <figure> has a default 40px inline margin — reset it */
+  aspect-ratio: 3 / 4;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--card);
+  cursor: grab;
+}
+
+.thumb.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.thumb.dragging {
+  opacity: 0.4;
+}
+
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb-del,
+.thumb-edit {
+  position: absolute;
+  top: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  cursor: pointer;
+  display: none;
+}
+
+.thumb-del {
+  right: 2px;
+  font-size: 14px;
+}
+
+.thumb-edit {
+  left: 2px;
+}
+
+.thumb:hover .thumb-del,
+.thumb.selected .thumb-del,
+.thumb:hover .thumb-edit,
+.thumb.selected .thumb-edit {
+  display: block;
+}
+
+.thumb-del:hover {
+  background: #d33;
+}
+
+.thumb-edit:hover {
+  background: var(--accent);
+}
+
+.thumb .dup-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: solid 1px red;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--warn-border);
+  color: #fff;
+}
+
+/* Enlarged-poster overlay. A column: image on top, optional docked form below.
+   Plain enlarge dismisses on click; edit mode closes via Save/Cancel. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.82);
+}
+
+.lightbox[hidden] {
+  display: none;
+}
+
+.lightbox-image {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  cursor: zoom-out;
+}
+
+.lightbox.editing .lightbox-image {
+  cursor: default;
+}
+
+.lightbox-image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.5);
+}
+
+/* Metadata form, docked at the bottom of the overlay. */
+.editor-card {
+  flex: 0 0 auto;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  padding: 12px 14px;
+  max-height: 60%;
+  overflow-y: auto;
+}
+
+.editor-card[hidden] {
+  display: none;
+}
+
+.dup-warning {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn-border);
+  border-radius: 6px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dup-warning[hidden] {
+  display: none;
+}
+
+.editor-fields label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.editor-fields input {
+  display: block;
+  width: 100%;
+  margin-top: 3px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

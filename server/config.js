@@ -29,6 +29,9 @@ export const paths = {
   indexFile: path.join(config.dataDir, "index.json"),
   // User-created dates (including empty ones with no captures yet).
   datesFile: path.join(config.dataDir, "dates.json"),
+  // Distinct venue names ever seen, for the panel's autocomplete. Kept separate
+  // so pruning past events doesn't erase the suggestion list.
+  venuesFile: path.join(config.dataDir, "venues.json"),
   // Tesseract language data / cache, kept so it isn't re-downloaded each run.
   ocrCacheDir: path.join(config.dataDir, "ocr-cache"),
 };

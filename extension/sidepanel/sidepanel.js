@@ -28,6 +28,7 @@ const editorDate = document.getElementById("editor-date");
 const editorTime = document.getElementById("editor-time");
 const editorUrl = document.getElementById("editor-url");
 const editorCancel = document.getElementById("editor-cancel");
+const venueDatalist = document.getElementById("venue-suggestions");
 
 // Interaction state.
 let selectedId = null; // highlighted item
@@ -99,15 +100,29 @@ async function loadCreatedDates() {
   }
 }
 
+// Persisted venue names for the editor's autocomplete. Offline we fall back to
+// whatever the loaded captures show (see populateVenueSuggestions).
+async function loadVenues() {
+  try {
+    const res = await fetch(`${SERVER_URL}/venues`);
+    if (!res.ok) throw new Error(`server responded ${res.status}`);
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
 // --- Rendering -----------------------------------------------------------
 
 async function render() {
-  const [captures, createdDates] = await Promise.all([
+  const [captures, createdDates, venues] = await Promise.all([
     loadCaptures(),
     loadCreatedDates(),
+    loadVenues(),
   ]);
 
   entriesById = new Map(captures.map((e) => [e.id, e]));
+  populateVenueSuggestions(captures, venues);
 
   countEl.textContent = captures.length
     ? `${captures.length} ${captures.length === 1 ? "capture" : "captures"}`
@@ -350,7 +365,7 @@ function renderThumb(entry) {
   del.textContent = "×";
   del.addEventListener("click", (e) => {
     e.stopPropagation(); // don't select / enlarge
-    deleteEntry(entry.id); // explicit button click — no confirm needed
+    confirmDelete(entry); // confirms first, unless it's a flagged duplicate
   });
   fig.appendChild(del);
 
@@ -358,10 +373,15 @@ function renderThumb(entry) {
     const badge = document.createElement("span");
     badge.className = "dup-badge";
     badge.textContent = "dup?";
-    badge.title =
+    const base =
       entry.duplicateDistance != null
         ? `Possible duplicate of an existing poster (similarity distance ${entry.duplicateDistance})`
         : "Possible duplicate of an existing poster";
+    badge.title = `${base} — click to show it`;
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation(); // don't select / enlarge this thumb
+      scrollToDuplicate(entry);
+    });
     fig.appendChild(badge);
   }
 
@@ -439,6 +459,31 @@ function selectThumb(id) {
   if (fig) fig.classList.add("selected");
 }
 
+// Jump to the poster this one was flagged a duplicate of: expand its month if
+// collapsed, scroll it into view, and flash/select it.
+function scrollToDuplicate(entry) {
+  const target = entry.duplicateOf && entriesById.get(entry.duplicateOf);
+  if (!target) {
+    showHint("The matching poster isn't in the catalog anymore.");
+    return;
+  }
+  const mKey = monthKeyOf(dateKey(target));
+  const monthEl = catalogEl.querySelector(`.month[data-month="${CSS.escape(mKey)}"]`);
+  if (monthEl && monthEl.classList.contains("collapsed")) {
+    monthEl.classList.remove("collapsed");
+    monthState.set(mKey, true);
+  }
+
+  const fig = catalogEl.querySelector(`.thumb[data-id="${CSS.escape(target.id)}"]`);
+  if (!fig) return;
+  selectThumb(target.id);
+  fig.scrollIntoView({ behavior: "smooth", block: "center" });
+  // Restart the flash animation even if it's already selected/flashed.
+  fig.classList.remove("flash");
+  void fig.offsetWidth;
+  fig.classList.add("flash");
+}
+
 // Plain enlarge: image only, dismissed by clicking the overlay.
 function openLightbox(entry) {
   editorForm.hidden = true;
@@ -465,6 +510,30 @@ function displayVenue(entry) {
 }
 function displayUrl(entry) {
   return entry.url || entry.pageUrl || "";
+}
+
+// Fill the venue autocomplete from the server's persisted registry plus any
+// venues on the currently-loaded captures (covers pending/offline ones the
+// server hasn't recorded yet). De-duplicated case-insensitively, sorted.
+function populateVenueSuggestions(captures, venues) {
+  const byLower = new Map(); // lowercase -> first-seen spelling
+  const add = (v) => {
+    const name = (v || "").trim();
+    if (name && !byLower.has(name.toLowerCase())) byLower.set(name.toLowerCase(), name);
+  };
+  for (const v of venues) add(v);
+  for (const entry of captures) add(displayVenue(entry));
+
+  const sorted = [...byLower.values()].sort((a, b) =>
+    a.toLowerCase().localeCompare(b.toLowerCase())
+  );
+  venueDatalist.replaceChildren(
+    ...sorted.map((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      return opt;
+    })
+  );
 }
 
 function thumbTooltip(entry) {
@@ -706,6 +775,12 @@ async function moveEntry(id, date) {
 }
 
 function confirmDelete(entry) {
+  // Likely-duplicates are expected to be culled on sight, so skip the prompt
+  // for them; everything else confirms before removal.
+  if (entry.duplicateOf) {
+    deleteEntry(entry.id);
+    return;
+  }
   const label =
     entry.event?.name ||
     (entry.caption && entry.caption.trim().slice(0, 60)) ||

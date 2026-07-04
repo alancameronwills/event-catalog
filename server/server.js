@@ -24,8 +24,10 @@ import {
   readDates,
   addDate,
   removeDate,
+  readVenues,
   backfillHashes,
   backfillImages,
+  backfillVenues,
   isDateString,
   isTimeString,
 } from "./store.js";
@@ -50,6 +52,7 @@ const server = http.createServer(async (req, res) => {
     if (route === "GET /captures") return sendJson(res, 200, await readIndex());
     if (route === "POST /captures") return await handleCreate(req, res);
     if (route === "GET /dates") return sendJson(res, 200, await readDates());
+    if (route === "GET /venues") return sendJson(res, 200, await readVenues());
     if (route === "POST /dates") return await handleAddDate(req, res);
     if (route === "POST /backfill-images") return sendJson(res, 200, await backfillImages());
 
@@ -205,4 +208,6 @@ server.listen(config.port, config.host, () => {
   backfillHashes()
     .then((n) => n && console.log(`backfilled perceptual hashes for ${n} capture(s)`))
     .catch((err) => console.warn("hash backfill failed:", err.message));
+  // Seed the venue-suggestion registry from any venues already in the index.
+  backfillVenues().catch((err) => console.warn("venue backfill failed:", err.message));
 });

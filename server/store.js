@@ -24,7 +24,7 @@ let writeChain = Promise.resolve();
 
 export async function init() {
   await fs.mkdir(paths.imagesDir, { recursive: true });
-  for (const file of [paths.indexFile, paths.datesFile]) {
+  for (const file of [paths.indexFile, paths.datesFile, paths.venuesFile]) {
     try {
       await fs.access(file);
     } catch {
@@ -164,6 +164,10 @@ export async function addCapture(capture) {
     entries.unshift(entry);
     await writeIndex(entries);
   });
+
+  // Remember the scraped venue so the panel can suggest it later. Done after
+  // the write above (recordVenues serializes its own write on the same chain).
+  await recordVenues([entry.event?.venue]);
 
   return entry;
 }
@@ -309,6 +313,7 @@ async function fetchImage(url) {
 // assignedDate: null to revert to the derived date.
 export async function updateCapture(id, patch) {
   let updated = null;
+  let venueToRecord = null;
   await enqueueWrite(async () => {
     const entries = await readIndex();
     const entry = entries.find((e) => e.id === id);
@@ -344,9 +349,14 @@ export async function updateCapture(id, patch) {
         t == null || String(t).trim() === "" ? null : isTimeString(t) ? t : entry.assignedTime;
     }
 
+    if ("venue" in patch && entry.venue) venueToRecord = entry.venue;
     updated = entry;
     await writeIndex(entries);
   });
+
+  // Record the venue after the write above — recordVenues serializes onto the
+  // same write chain, so calling it *inside* the task would deadlock.
+  if (venueToRecord) await recordVenues([venueToRecord]);
   return updated;
 }
 
@@ -410,6 +420,65 @@ async function writeDatesFile(dates) {
   const tmp = `${paths.datesFile}.${randomUUID()}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(dates, null, 2) + "\n");
   await fs.rename(tmp, paths.datesFile);
+}
+
+// --- Venue suggestions ---------------------------------------------------
+//
+// Every venue name ever seen (scraped or typed), for the panel's autocomplete.
+// Persisted separately from the index so pruning past events doesn't shrink the
+// list. De-duplicated case/space-insensitively; the first-seen spelling wins.
+
+export async function readVenues() {
+  try {
+    const raw = await fs.readFile(paths.venuesFile, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v) => typeof v === "string" && v.trim()) : [];
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw err;
+  }
+}
+
+async function recordVenues(names) {
+  const cleaned = [
+    ...new Set(
+      (Array.isArray(names) ? names : [names])
+        .map((n) => (typeof n === "string" ? n.trim() : ""))
+        .filter(Boolean)
+    ),
+  ];
+  if (cleaned.length === 0) return;
+  await enqueueWrite(async () => {
+    const venues = await readVenues();
+    const seen = new Set(venues.map((v) => v.toLowerCase()));
+    let changed = false;
+    for (const name of cleaned) {
+      if (!seen.has(name.toLowerCase())) {
+        venues.push(name);
+        seen.add(name.toLowerCase());
+        changed = true;
+      }
+    }
+    if (changed) {
+      venues.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+      await writeVenuesFile(venues);
+    }
+  });
+}
+
+async function writeVenuesFile(venues) {
+  const tmp = `${paths.venuesFile}.${randomUUID()}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(venues, null, 2) + "\n");
+  await fs.rename(tmp, paths.venuesFile);
+}
+
+// Seed the registry from venues already in the index (e.g. captured before this
+// existed). Runs once at startup; recordVenues de-dups, so it's idempotent.
+export async function backfillVenues() {
+  const entries = await readIndex();
+  const names = entries.map((e) => e.venue || e.event?.venue).filter(Boolean);
+  if (names.length) await recordVenues(names);
+  return names.length;
 }
 
 export async function deleteCapture(id) {

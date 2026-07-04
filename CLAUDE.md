@@ -37,11 +37,14 @@ Windows box; the Bash tool is Git Bash. `/tmp` resolves to `C:\tmp` for Node
 ## Server layout & data model
 
 - `server.js` — HTTP routing, CORS, image serving (with path-traversal guard),
-  request-body limits. Startup runs `backfillHashes()` in the background.
-- `store.js` — persistence: image files, the index, dates, plus `addCapture`,
-  `updateCapture`, `deleteCapture`, and the backfills. **Index writes are
-  serialized** through `enqueueWrite` and written atomically (temp file +
-  rename); keep new writes on that path.
+  request-body limits. Startup runs `backfillHashes()` and `backfillVenues()`
+  in the background.
+- `store.js` — persistence: image files, the index, dates, the venue registry,
+  plus `addCapture`, `updateCapture`, `deleteCapture`, and the backfills.
+  **Index writes are serialized** through `enqueueWrite` and written atomically
+  (temp file + rename); keep new writes on that path. `recordVenues` runs on the
+  same chain, so call it *outside* an in-flight `enqueueWrite` task, never
+  within (that would deadlock).
 - `hash.js` — 64-bit dHash via `sharp` + Hamming distance.
 - `ocr.js` — Tesseract text extraction (one reused worker, serialized) and
   best-effort English parsers for a date (`parseEventDate`) and a *start* time
@@ -49,8 +52,9 @@ Windows box; the Bash tool is Git Bash. `/tmp` resolves to `C:\tmp` for Node
 - `config.js` — env-configurable settings and derived `paths`.
 
 Data lives under `server/data/` (gitignored): `index.json` (array, newest
-first), `dates.json` (user-created dates), `ocr-cache/` (Tesseract language
-data), and `images/<YYYY-MM-DD>/<id>.<ext>`.
+first), `dates.json` (user-created dates), `venues.json` (every venue name ever
+seen, for autocomplete — not pruned when events pass), `ocr-cache/` (Tesseract
+language data), and `images/<YYYY-MM-DD>/<id>.<ext>`.
 
 **Effective date** (folder + grouping key) precedence, defined in
 `effectiveDate()` (server) and mirrored by `dateKey()` (panel):
@@ -75,8 +79,9 @@ back to scraped/OCR'd values in the UI.
 `GET /health`, `GET|POST /captures` (POST accepts an optional `assignedDate` to
 pin the date — still OCRs for a start time), `PATCH /captures/:id` (assignedDate
 moves the file; title/venue/url/assignedTime are metadata), `DELETE
-/captures/:id`, `GET|POST /dates`, `DELETE /dates/:date`, `POST
-/backfill-images`, `GET /images/<folder>/<file>`.
+/captures/:id`, `GET|POST /dates`, `DELETE /dates/:date`, `GET /venues`
+(distinct venue names for autocomplete), `POST /backfill-images`, `GET
+/images/<folder>/<file>`.
 
 ## Extension notes
 
@@ -94,8 +99,10 @@ moves the file; title/venue/url/assignedTime are metadata), `DELETE
   collapsed, and toggles persist across re-renders via `monthState`). Also:
   drag/copy-paste to move posters between dates, click-to-enlarge lightbox, a
   bottom-docked edit form (title/venue/date/time/url + duplicate warning) that
-  also opens on capture, and delete. Server is the source of truth; pending local
-  captures merge on top. Two behaviors worth knowing:
+  also opens on capture, and delete. The Venue field autocompletes from a native
+  `<datalist>` populated (each render) from `GET /venues` unioned with venues on
+  the loaded captures. Server is the source of truth; pending local captures
+  merge on top. Two behaviors worth knowing:
     - **Prune on open** — `pruneOutdated()` runs once on load and *permanently
       deletes* every capture whose effective date is before today (plus stale
       empty dates). Destructive by design; "unknown"-dated items are spared.

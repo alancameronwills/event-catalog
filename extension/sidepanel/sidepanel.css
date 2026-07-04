@@ -307,15 +307,34 @@ body {
 
 .thumb .dup-badge {
   position: absolute;
-  top: 4px;
-  left: 4px;
+  bottom: 4px;
+  right: 4px;
   padding: 1px 5px;
   border-radius: 4px;
   border: solid 1px red;
   font-size: 10px;
   font-weight: 600;
   background: var(--warn-border);
-  color: #fff;
+  color: royalblue;
+  cursor: pointer;
+}
+
+.thumb .dup-badge:hover {
+  background: #d33;
+}
+
+/* Brief highlight when a poster is scrolled to via its duplicate badge. */
+@keyframes thumb-flash {
+  from {
+    box-shadow: 0 0 0 3px var(--accent);
+  }
+  to {
+    box-shadow: 0 0 0 0 rgba(24, 119, 242, 0);
+  }
+}
+
+.thumb.flash {
+  animation: thumb-flash 1.2s ease-out;
 }
 
 /* Enlarged-poster overlay. A column: image on top, optional docked form below.

@@ -1,0 +1,102 @@
+# CLAUDE.md
+
+Guidance for working in this repo. See `plan.md` for the original design and
+build order; this file captures how things actually fit together now.
+
+## What this is
+
+A personal "assisted capture" tool for saving Facebook event posters into a
+local, date-organized catalog with duplicate detection. Two halves:
+
+- **`extension/`** — a Chrome MV3 extension. Right-click (or Ctrl+Shift+E) a
+  poster on Facebook to capture it; a side panel shows the catalog.
+- **`server/`** — a local Node HTTP server that stores images on disk, keeps a
+  JSON index, perceptually-hashes for duplicates, and OCRs posters for dates.
+
+They talk over `http://127.0.0.1:3777`. The extension falls back to
+`chrome.storage.local` when the server is offline.
+
+## Running
+
+```sh
+cd server && npm start          # node server.js, listens on 127.0.0.1:3777
+```
+
+Load the extension unpacked at `chrome://extensions` (Developer mode → Load
+unpacked → `extension/`). After editing extension files, reload it there (↻).
+
+**The server does not hot-reload.** After changing anything in `server/`, kill
+the running process and restart it, or changes won't take effect. Typical loop:
+find the PID on 3777 (`netstat -ano | grep :3777`), `taskkill //PID <pid> //F`,
+then `node server.js`. This is a common footgun — a "fix didn't work" is often
+just a stale server.
+
+Windows box; the Bash tool is Git Bash. `/tmp` resolves to `C:\tmp` for Node
+(which usually doesn't exist) — use the scratchpad dir for temp files instead.
+
+## Server layout & data model
+
+- `server.js` — HTTP routing, CORS, image serving (with path-traversal guard),
+  request-body limits. Startup runs `backfillHashes()` in the background.
+- `store.js` — persistence: image files, the index, dates, plus `addCapture`,
+  `updateCapture`, `deleteCapture`, and the backfills. **Index writes are
+  serialized** through `enqueueWrite` and written atomically (temp file +
+  rename); keep new writes on that path.
+- `hash.js` — 64-bit dHash via `sharp` + Hamming distance.
+- `ocr.js` — Tesseract text extraction (one reused worker, serialized) and a
+  best-effort English date parser (`parseEventDate`).
+- `config.js` — env-configurable settings and derived `paths`.
+
+Data lives under `server/data/` (gitignored): `index.json` (array, newest
+first), `dates.json` (user-created dates), `ocr-cache/` (Tesseract language
+data), and `images/<YYYY-MM-DD>/<id>.<ext>`.
+
+**Effective date** (folder + grouping key) precedence, defined in
+`effectiveDate()` (server) and mirrored by `dateKey()` (panel):
+`assignedDate` → structured `event.startDate` → `ocrDate` → capture date.
+Keep these two in sync when you touch date logic.
+
+An index entry: `id, capturedAt, assignedDate, eventDate, imageFile, imageUrl,
+caption, event{name,startDate,endDate,venue}, pageUrl, pageTitle, title, venue,
+url, hash, ocrText, ocrDate, duplicateOf, duplicateDistance`. `title/venue/url`
+are user overrides that fall back to scraped values in the UI.
+
+### HTTP API
+
+`GET /health`, `GET|POST /captures`, `PATCH /captures/:id` (assignedDate moves
+the file; title/venue/url are metadata), `DELETE /captures/:id`,
+`GET|POST /dates`, `DELETE /dates/:date`, `POST /backfill-images`,
+`GET /images/<folder>/<file>`.
+
+## Extension notes
+
+- `background.js` (service worker) — context menu, capture flow, side-panel
+  open, and **fetching the image bytes**. This is important: content scripts
+  run in the page origin and are CORS-blocked from `fbcdn.net`, so the service
+  worker fetches the bytes (it can, via `host_permissions`) and encodes them.
+  Service workers have no `FileReader`, hence the manual ArrayBuffer→base64.
+- `content.js` — runs on Facebook; finds the image, picks best-resolution from
+  `srcset`, scrapes caption + JSON-LD event data. Wrapped in a guarded IIFE so
+  it's safe to inject more than once (the SW injects on demand into tabs that
+  predate the extension). It does **not** fetch bytes.
+- `sidepanel/` — the catalog UI: date-grouped grid, drag/copy-paste to move
+  posters between dates, click-to-enlarge lightbox, a bottom-docked edit form
+  (title/venue/date/url + duplicate warning) that also opens on capture, and
+  delete. Server is the source of truth; pending local captures merge on top.
+
+Facebook's DOM changes often — the image path is robust, but caption/date
+scraping is expected to need occasional maintenance.
+
+## Conventions
+
+- ES modules, Node ≥ 18 (dev on 22). Server is dependency-light: only `sharp`
+  and `tesseract.js`. Prefer built-ins over adding deps.
+- No test framework. Verify with `node --check <file>` for syntax and ad-hoc
+  smoke tests against a throwaway instance: run the server with
+  `CATALOG_DATA_DIR=<scratch> CATALOG_PORT=<other>` so you never touch real
+  data, exercise it with `curl`, and inspect. Large data-URL bodies exceed
+  shell arg limits — write the JSON body to a file and `curl --data-binary @`.
+- The UI can't be driven from here (no Chrome); verify panel changes via
+  `node --check` plus the server endpoints they call.
+- Match the surrounding style: small focused functions, comments explaining
+  *why* (especially the CORS/date-precedence/serialized-write decisions).

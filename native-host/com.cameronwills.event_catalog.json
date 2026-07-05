@@ -1,0 +1,9 @@
+{
+    "name":  "com.cameronwills.event_catalog",
+    "description":  "Starts the Event Catalog local server for the extension.",
+    "path":  "C:\\Users\\alan\\source\\event-catalog\\native-host\\event_catalog_host.bat",
+    "type":  "stdio",
+    "allowed_origins":  [
+                            "chrome-extension://bhogjcifeafjmeellncealciojjidmgo/"
+                        ]
+}

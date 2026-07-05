@@ -9,6 +9,11 @@ const STORAGE_KEY = "captures";
 const CREATED_DATES_KEY = "createdDates";
 const SERVER_URL = "http://127.0.0.1:3777";
 
+// Native-messaging host that launches the local server when it isn't running
+// (see native-host/). Registered per-user via native-host/install.cmd; the
+// panel messages it on load if /health doesn't answer.
+const NATIVE_HOST = "com.cameronwills.event_catalog";
+
 // External site to publish selected events to: a WordPress install running the
 // gigiau-events-posters plugin (see its README for the REST API).
 const UPLOAD_URL = "https://gigiau.uk/pawb/wp-json/gigiau/v1/events";
@@ -58,12 +63,73 @@ let filterInitial = false; // when on, show only events still to upload
 const monthState = new Map(); // "YYYY-MM"|"unknown" -> open? (persists re-renders)
 
 document.addEventListener("DOMContentLoaded", async () => {
+  // Bring the local backend up first if it's down, so pruning and the first
+  // render see live server data instead of the offline fallback.
+  await ensureServerRunning();
   // Opening the catalog is the moment to clear out events that have already
   // passed (see pruneOutdated); then draw what's left.
   await pruneOutdated();
   render();
   wireControls();
 });
+
+// --- Auto-start the local server -----------------------------------------
+
+let serverStartInFlight = false;
+
+async function serverHealthy() {
+  try {
+    const res = await fetch(`${SERVER_URL}/health`, { cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// If the local server isn't answering, ask the native host to launch it and
+// wait (up to ~10s) for it to come up. No-op when already healthy or when the
+// native host isn't installed. Guarded so overlapping callers don't fire twice;
+// the server also refuses a second port bind as a backstop.
+async function ensureServerRunning() {
+  if (serverStartInFlight) return;
+  if (await serverHealthy()) return;
+  serverStartInFlight = true;
+  try {
+    showStatus("Starting local server…");
+    await launchServerViaNativeHost();
+    for (let i = 0; i < 20; i++) {
+      await sleep(500);
+      if (await serverHealthy()) {
+        showStatus("Local server started.");
+        return;
+      }
+    }
+    // Couldn't confirm it came up: leave the panel in its offline fallback.
+    showStatus("Couldn't start the local server — is the native host installed?");
+  } finally {
+    serverStartInFlight = false;
+  }
+}
+
+// Send one message to the native host, which spawns `node server.js`. A
+// lastError here (host missing, or it exited without replying) is not fatal:
+// we verify success by polling /health, so just resolve either way.
+function launchServerViaNativeHost() {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendNativeMessage(NATIVE_HOST, { action: "start" }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // Re-render when a capture is added, and surface status messages.
 chrome.runtime.onMessage.addListener((message) => {

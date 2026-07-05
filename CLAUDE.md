@@ -31,6 +31,17 @@ find the PID on 3777 (`netstat -ano | grep :3777`), `taskkill //PID <pid> //F`,
 then `node server.js`. This is a common footgun — a "fix didn't work" is often
 just a stale server.
 
+Two conveniences avoid the manual start: `start-server.cmd` (repo root) is an
+idempotent, double-clickable launcher (no-op if `/health` already answers; good
+for `shell:startup`). And `native-host/` registers a Chrome **native-messaging**
+host so the side panel auto-starts the server on load when it's down — the panel
+calls `ensureServerRunning()` (see `sidepanel.js`), which messages
+`com.cameronwills.event_catalog`; the host (`host.mjs`, launched via
+`event_catalog_host.bat`) spawns `node server.js` detached and exits. Requires a
+one-time `native-host/install.cmd <extension-id>` and the `nativeMessaging`
+manifest permission. Neither of these hot-reloads either — restarting after
+`server/` edits still means killing the process by hand.
+
 Windows box; the Bash tool is Git Bash. `/tmp` resolves to `C:\tmp` for Node
 (which usually doesn't exist) — use the scratchpad dir for temp files instead.
 

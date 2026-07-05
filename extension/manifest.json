@@ -7,7 +7,8 @@
     "contextMenus",
     "sidePanel",
     "storage",
-    "scripting"
+    "scripting",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "https://www.facebook.com/*",

@@ -117,7 +117,12 @@ moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
       month sections), *Filter* (toggle — show only initial-state events), and
       *Upload* (POST every uploadable initial-state event to the gigiau site's
       REST API as multipart, marking each `"uploaded"` on success; failures and
-      incomplete posters stay initial for a retry). Only the upload URL is a
+      incomplete posters stay initial for a retry). A successful run reloads any
+      open tab showing the listing (`refreshUploadTargetTabs()` — any
+      `gigiau.uk/pawb` path; uses the site host permission, no `tabs` perm
+      needed) so new posters appear. The poster URL is sent as the API's
+      `bookinglink`; `displayUrl()`/`specificPageUrl()` drop a bare
+      `facebook.com` root so it isn't used as a link. Only the upload URL is a
       constant in `sidepanel.js`; the WordPress **username and (secret) app
       password are *not* in source** — `getUploadAuth()` prompts for both on
       first upload (the username prompt pre-fills a default, since it may change)

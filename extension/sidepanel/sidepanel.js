@@ -555,7 +555,25 @@ function displayVenue(entry) {
   return entry.venue || entry.event?.venue || "";
 }
 function displayUrl(entry) {
-  return entry.url || entry.pageUrl || "";
+  // A user-set URL always wins; otherwise fall back to the captured page URL,
+  // but only when it points at a specific page (not the bare facebook.com root).
+  return entry.url || specificPageUrl(entry.pageUrl) || "";
+}
+
+// The captured page URL is only useful as a link if it names a specific page /
+// post / event. Captured from the feed it's just "https://facebook.com" — treat
+// that (any facebook.com root, with or without a trailing slash/query) as blank.
+function specificPageUrl(url) {
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    if (/(^|\.)facebook\.com$/i.test(u.hostname) && u.pathname.replace(/\/+$/, "") === "") {
+      return "";
+    }
+    return url;
+  } catch {
+    return url; // not parseable — leave it as-is rather than dropping it
+  }
 }
 
 // Fill the venue autocomplete from the server's persisted registry plus any
@@ -1046,6 +1064,9 @@ async function uploadInitial() {
     }
   }
   uploadBtn.disabled = false;
+  // Newly-published events won't show on an already-open listing until it
+  // reloads, so refresh any tab showing the site once something went up.
+  if (ok > 0) await refreshUploadTargetTabs();
   if (authFailed) {
     showStatus("Upload failed — the credentials were rejected. Try again to re-enter them.");
     await render();
@@ -1058,6 +1079,28 @@ async function uploadInitial() {
       (skipped ? ` ${skipped} skipped (no title/venue).` : "")
   );
   await render();
+}
+
+// Reload any browser tab currently showing the events listing (the /pawb
+// section of gigiau.uk) so freshly-uploaded posters appear. Best-effort: relies
+// on the site's host permission for tab URLs; failures are non-fatal.
+async function refreshUploadTargetTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: "https://gigiau.uk/*" });
+    for (const tab of tabs) {
+      let path;
+      try {
+        path = new URL(tab.url).pathname.replace(/\/+$/, "");
+      } catch {
+        continue;
+      }
+      if (path === "/pawb" || path.startsWith("/pawb/")) {
+        await chrome.tabs.reload(tab.id);
+      }
+    }
+  } catch (err) {
+    console.warn("could not refresh the gigiau.uk tab(s):", err);
+  }
 }
 
 // Post a single event to the site's REST API as multipart/form-data. The poster

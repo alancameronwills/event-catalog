@@ -31,11 +31,13 @@ const UPLOAD_CYCLE = { initial: "omit", omit: "uploaded", uploaded: "initial" };
 
 const catalogEl = document.getElementById("catalog");
 const emptyEl = document.getElementById("empty");
+const emptyFiltered = document.getElementById("emptyFiltered");
 const countEl = document.getElementById("count");
 const statusEl = document.getElementById("status");
 const hintEl = document.getElementById("hint");
 const expandBtn = document.getElementById("expand-btn");
 const filterBtn = document.getElementById("filter-btn");
+const turnOffFilterBtn = document.getElementById("turnOffFilter");
 const uploadBtn = document.getElementById("upload-btn");
 const addDateForm = document.getElementById("add-date-form");
 const addDateInput = document.getElementById("add-date-input");
@@ -241,10 +243,15 @@ async function render() {
   }
 
   if (groups.size === 0) {
-    emptyEl.hidden = false;
+    if (filterInitial) 
+      emptyFiltered.hidden = false;
+    else 
+      emptyEl.hidden = false;
+    
     return;
   }
   emptyEl.hidden = true;
+  emptyFiltered.hidden = true;
 
   // Bucket date keys (earliest first, "unknown" last) into calendar months so
   // the list reads as collapsible month sections.
@@ -808,6 +815,13 @@ function setFocusedDate(key) {
   if (section) section.classList.add("focused");
 }
 
+function toggleFilter(toState) {
+    filterInitial = !!(toState==null ? !filterInitial : toState);
+    render();
+    filterBtn.classList.toggle("active", filterInitial);
+    filterBtn.setAttribute("aria-pressed", String(filterInitial));
+}
+
 function wireControls() {
   // The add-date form is always visible; default its picker to today.
   if (!addDateInput.value) addDateInput.value = new Date().toISOString().slice(0, 10);
@@ -820,12 +834,9 @@ function wireControls() {
   expandBtn.addEventListener("click", expandAllMonths);
 
   // Filter toggle: narrow the view to events still awaiting upload.
-  filterBtn.addEventListener("click", () => {
-    filterInitial = !filterInitial;
-    filterBtn.classList.toggle("active", filterInitial);
-    filterBtn.setAttribute("aria-pressed", String(filterInitial));
-    render();
-  });
+  filterBtn.addEventListener("click", () => toggleFilter());
+
+  turnOffFilterBtn.addEventListener("click", ()=>toggleFilter(false))
 
   // Publish all still-initial events to the external site.
   uploadBtn.addEventListener("click", uploadInitial);
@@ -1133,6 +1144,10 @@ async function uploadInitial() {
   // Newly-published events won't show on an already-open listing until it
   // reloads, so refresh any tab showing the site once something went up.
   if (ok > 0) await refreshUploadTargetTabs();
+  if (failed == 0) {
+    // Switch off filter, as none will be showing now
+    toggleFilter(false);
+  }
   if (authFailed) {
     showStatus("Upload failed — the credentials were rejected. Try again to re-enter them.");
     await render();

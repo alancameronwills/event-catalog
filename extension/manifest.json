@@ -14,7 +14,8 @@
     "https://web.facebook.com/*",
     "https://*.fbcdn.net/*",
     "http://localhost/*",
-    "http://127.0.0.1/*"
+    "http://127.0.0.1/*",
+    "https://gigiau.uk/*"
   ],
   "background": {
     "service_worker": "background.js"

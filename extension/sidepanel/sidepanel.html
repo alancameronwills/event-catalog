@@ -7,21 +7,30 @@
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
-    <!-- Header and the add-date form stay pinned together at the top; the form
-         drops in beneath the header rather than scrolling away with the list. -->
     <div class="panel-top">
       <header class="panel-header">
         <h1>Event Catalog</h1>
         <div class="header-right">
           <span id="count" class="count" aria-live="polite"></span>
-          <button id="add-date-btn" class="btn" type="button">+ New date</button>
+          <!-- Icon-only controls: expand all months, filter to un-handled
+               events, and upload those events to the external site. -->
+          <button id="expand-btn" class="btn btn-icon" type="button" title="Expand all months" aria-label="Expand all months">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4"/></svg>
+          </button>
+          <button id="filter-btn" class="btn btn-icon" type="button" title="Show only events still to upload" aria-label="Show only events still to upload" aria-pressed="false">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12l-4.6 5.5V13L7 11V8.5L2 3z"/></svg>
+          </button>
+          <button id="upload-btn" class="btn btn-icon" type="button" title="Upload events to gigiau.uk" aria-label="Upload events to gigiau.uk">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11V3M5 6l3-3 3 3M3 13h10"/></svg>
+          </button>
         </div>
       </header>
 
-      <form id="add-date-form" class="add-date-form" hidden>
+      <!-- Always-visible: pick a date and add an (empty) date group to file
+           posters under. -->
+      <form id="add-date-form" class="add-date-form">
         <input type="date" id="add-date-input" required />
-        <button type="submit" class="btn">Add</button>
-        <button type="button" id="add-date-cancel" class="btn btn-plain">Cancel</button>
+        <button type="submit" class="btn">Add date</button>
       </form>
     </div>
 

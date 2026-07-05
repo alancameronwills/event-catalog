@@ -75,6 +75,33 @@ body {
   color: var(--muted);
 }
 
+/* Square, icon-only header controls (expand / filter / upload). */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
+}
+
+.btn-icon:hover {
+  color: var(--text);
+}
+
+/* Lit up while the filter toggle is on. */
+.btn-icon.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn-icon:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .add-date-form {
   display: flex;
   align-items: center;
@@ -303,6 +330,35 @@ body {
 
 .thumb-edit:hover {
   background: var(--accent);
+}
+
+/* Upload-state toggle, bottom-left. Always visible (it conveys state):
+   white = initial (to upload), black = omit, green = uploaded. */
+.thumb-state {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+}
+
+/* Initial but not yet uploadable (missing title or venue). */
+.thumb-state[data-state="initial"][data-incomplete="true"] {
+  background: #e74c3c;
+  border-color: #a82315;
+}
+
+.thumb-state[data-state="omit"] {
+  background: #000;
+}
+
+.thumb-state[data-state="uploaded"] {
+  background: #2ecc40;
 }
 
 .thumb .dup-badge {

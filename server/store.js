@@ -126,6 +126,9 @@ export async function addCapture(capture) {
     // Duplicate detection (step 3):
     duplicateOf: null,
     duplicateDistance: null,
+    // Selective upload to an external site: "omit" | "uploaded"; null (the
+    // default) means "initial" — a candidate for the next upload.
+    uploadState: null,
   };
 
   const decoded = parseDataUrl(capture.imageDataUrl);
@@ -358,6 +361,13 @@ export async function updateCapture(id, patch) {
       const d = patch.assignedEndDate;
       entry.assignedEndDate =
         d == null || String(d).trim() === "" ? null : isDateString(d) ? d : entry.assignedEndDate;
+    }
+
+    // Selective-upload state. Only "omit"/"uploaded" are stored; anything else
+    // (including "initial", null, or blank) resets to the default initial state.
+    if ("uploadState" in patch) {
+      const s = patch.uploadState;
+      entry.uploadState = s === "omit" || s === "uploaded" ? s : null;
     }
 
     if ("venue" in patch && entry.venue) venueToRecord = entry.venue;

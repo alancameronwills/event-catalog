@@ -71,14 +71,20 @@ editor's Time field.
 An index entry: `id, capturedAt, assignedDate, eventDate, imageFile, imageUrl,
 caption, event{name,startDate,endDate,venue}, pageUrl, pageTitle, title, venue,
 url, assignedTime, hash, ocrText, ocrDate, ocrTime, duplicateOf,
-duplicateDistance`. `title/venue/url/assignedTime` are user overrides that fall
-back to scraped/OCR'd values in the UI.
+duplicateDistance, uploadState`. `title/venue/url/assignedTime` are user
+overrides that fall back to scraped/OCR'd values in the UI.
+
+**Upload state** (`uploadState`) drives the *selective upload* feature: `null`
+(the default) = "initial" / a candidate to upload; `"omit"` = skip; `"uploaded"`
+= already sent. Toggled per-poster and by the header Upload button (see Extension
+notes). Only `"omit"`/`"uploaded"` are stored — anything else (incl. "initial")
+normalizes back to `null`.
 
 ### HTTP API
 
 `GET /health`, `GET|POST /captures` (POST accepts an optional `assignedDate` to
 pin the date — still OCRs for a start time), `PATCH /captures/:id` (assignedDate
-moves the file; title/venue/url/assignedTime are metadata), `DELETE
+moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
 /captures/:id`, `GET|POST /dates`, `DELETE /dates/:date`, `GET /venues`
 (distinct venue names for autocomplete), `POST /backfill-images`, `GET
 /images/<folder>/<file>`.
@@ -102,7 +108,25 @@ moves the file; title/venue/url/assignedTime are metadata), `DELETE
   also opens on capture, and delete. The Venue field autocompletes from a native
   `<datalist>` populated (each render) from `GET /venues` unioned with venues on
   the loaded captures. Server is the source of truth; pending local captures
-  merge on top. Two behaviors worth knowing:
+  merge on top.
+    - **Selective upload** — each thumb has a bottom-left square that cycles its
+      `uploadState` white→black→green (initial→omit→uploaded), persisted via
+      PATCH. An initial poster missing a title *or* venue shows **red** instead
+      of white (tooltip "Set title and venue") and is skipped by Upload — see
+      `isUploadable()`. Three icon buttons in the header: *Expand* (open all
+      month sections), *Filter* (toggle — show only initial-state events), and
+      *Upload* (POST every uploadable initial-state event to the gigiau site's
+      REST API as multipart, marking each `"uploaded"` on success; failures and
+      incomplete posters stay initial for a retry). Only the upload URL is a
+      constant in `sidepanel.js`; the WordPress **username and (secret) app
+      password are *not* in source** — `getUploadAuth()` prompts for both on
+      first upload (the username prompt pre-fills a default, since it may change)
+      and keeps them in `chrome.storage.local` (this browser profile only); a
+      401/403 forgets them so the next run re-prompts. Password spaces are
+      stripped before encoding (WP strips non-alphanumerics on auth).
+      `https://gigiau.uk/*` is in the manifest `host_permissions` so the panel
+      isn't CORS-blocked posting there.
+  Two more behaviors worth knowing:
     - **Prune on open** — `pruneOutdated()` runs once on load and *permanently
       deletes* every capture whose effective date is before today (plus stale
       empty dates). Destructive by design; "unknown"-dated items are spared.

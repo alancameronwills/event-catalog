@@ -110,6 +110,9 @@ async function handleUpdate(req, res, id) {
   if ("assignedEndDate" in patch && patch.assignedEndDate !== null && !isDateString(patch.assignedEndDate)) {
     return sendJson(res, 400, { error: "assignedEndDate must be YYYY-MM-DD or null" });
   }
+  if ("uploadState" in patch && patch.uploadState !== null && !["initial", "omit", "uploaded"].includes(patch.uploadState)) {
+    return sendJson(res, 400, { error: "uploadState must be initial, omit, uploaded, or null" });
+  }
   const updated = await updateCapture(id, patch);
   if (!updated) return sendJson(res, 404, { error: "not found" });
   const { imageBytes, ...clean } = updated;

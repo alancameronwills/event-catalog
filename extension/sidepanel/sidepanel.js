@@ -9,15 +9,31 @@ const STORAGE_KEY = "captures";
 const CREATED_DATES_KEY = "createdDates";
 const SERVER_URL = "http://127.0.0.1:3777";
 
+// External site to publish selected events to: a WordPress install running the
+// gigiau-events-posters plugin (see its README for the REST API).
+const UPLOAD_URL = "https://gigiau.uk/pawb/wp-json/gigiau/v1/events";
+// The username and (secret) application password are NOT kept in source. Both
+// are stored in chrome.storage.local (this browser profile only) and prompted
+// for on first upload — see getUploadAuth(). The username is only a default the
+// prompt pre-fills, since it may change.
+const UPLOAD_USER_DEFAULT = "alan";
+const UPLOAD_USER_KEY = "uploadUser";
+const UPLOAD_PASSWORD_KEY = "uploadPassword";
+
+// Upload state cycles white (initial) -> black (omit) -> green (uploaded) and
+// back. Only "omit"/"uploaded" are persisted; everything else is "initial".
+const UPLOAD_CYCLE = { initial: "omit", omit: "uploaded", uploaded: "initial" };
+
 const catalogEl = document.getElementById("catalog");
 const emptyEl = document.getElementById("empty");
 const countEl = document.getElementById("count");
 const statusEl = document.getElementById("status");
 const hintEl = document.getElementById("hint");
-const addDateBtn = document.getElementById("add-date-btn");
+const expandBtn = document.getElementById("expand-btn");
+const filterBtn = document.getElementById("filter-btn");
+const uploadBtn = document.getElementById("upload-btn");
 const addDateForm = document.getElementById("add-date-form");
 const addDateInput = document.getElementById("add-date-input");
-const addDateCancel = document.getElementById("add-date-cancel");
 const lightboxEl = document.getElementById("lightbox");
 const lightboxImg = document.getElementById("lightbox-img");
 const editorForm = document.getElementById("editor-form");
@@ -38,6 +54,7 @@ let focusedDate = null; // group targeted for paste
 let draggingActive = false;
 let entriesById = new Map(); // id -> entry, refreshed each render
 let editingId = null; // poster whose metadata is open in the editor
+let filterInitial = false; // when on, show only events still to upload
 const monthState = new Map(); // "YYYY-MM"|"unknown" -> open? (persists re-renders)
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -135,17 +152,26 @@ async function render() {
     el.remove();
   }
 
+  // When the filter is on, show only events still in the initial state (the
+  // ones the Upload button would send).
+  const visible = filterInitial
+    ? captures.filter((e) => uploadStateOf(e) === "initial")
+    : captures;
+
   // Group items by stable date key, then ensure created (possibly empty) dates
   // each have a group.
   const groups = new Map();
-  for (const entry of captures) {
+  for (const entry of visible) {
     const key = dateKey(entry);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(entry);
   }
+  // Empty created dates only clutter the filtered view, so skip them there.
   const createdSet = new Set(createdDates);
-  for (const date of createdDates) {
-    if (!groups.has(date)) groups.set(date, []);
+  if (!filterInitial) {
+    for (const date of createdDates) {
+      if (!groups.has(date)) groups.set(date, []);
+    }
   }
 
   if (groups.size === 0) {
@@ -385,6 +411,25 @@ function renderThumb(entry) {
     });
     fig.appendChild(badge);
   }
+
+  // Upload-state toggle (bottom-left): white=initial, black=omit, green=uploaded.
+  // An initial poster missing a title or venue can't be uploaded — flag it red.
+  const state = document.createElement("button");
+  state.className = "thumb-state";
+  state.type = "button";
+  const st = uploadStateOf(entry);
+  state.dataset.state = st;
+  if (st === "initial" && !isUploadable(entry)) {
+    state.dataset.incomplete = "true";
+    state.title = "Set title and venue";
+  } else {
+    state.title = `Upload: ${st} — click to change`;
+  }
+  state.addEventListener("click", (e) => {
+    e.stopPropagation(); // don't select / enlarge
+    cycleUploadState(entry);
+  });
+  fig.appendChild(state);
 
   fig.addEventListener("click", (e) => {
     e.stopPropagation(); // selecting an item shouldn't also refocus its group
@@ -680,21 +725,26 @@ function setFocusedDate(key) {
 }
 
 function wireControls() {
-  addDateBtn.addEventListener("click", () => {
-    addDateForm.hidden = false;
-    if (!addDateInput.value) addDateInput.value = new Date().toISOString().slice(0, 10);
-    addDateInput.focus();
-  });
-  addDateCancel.addEventListener("click", () => {
-    addDateForm.hidden = true;
-  });
+  // The add-date form is always visible; default its picker to today.
+  if (!addDateInput.value) addDateInput.value = new Date().toISOString().slice(0, 10);
   addDateForm.addEventListener("submit", (e) => {
     e.preventDefault();
-    if (isDateString(addDateInput.value)) {
-      addDate(addDateInput.value);
-      addDateForm.hidden = true;
-    }
+    if (isDateString(addDateInput.value)) addDate(addDateInput.value);
   });
+
+  // Expand every month section so the whole catalog is visible at once.
+  expandBtn.addEventListener("click", expandAllMonths);
+
+  // Filter toggle: narrow the view to events still awaiting upload.
+  filterBtn.addEventListener("click", () => {
+    filterInitial = !filterInitial;
+    filterBtn.classList.toggle("active", filterInitial);
+    filterBtn.setAttribute("aria-pressed", String(filterInitial));
+    render();
+  });
+
+  // Publish all still-initial events to the external site.
+  uploadBtn.addEventListener("click", uploadInitial);
 
   // Clicking the overlay dismisses a plain enlarge, but not while editing
   // (only Save/Cancel close the editor there).
@@ -862,6 +912,210 @@ async function removeDate(date) {
   await removeLocalDate(date);
   if (focusedDate === date) focusedDate = null;
   await render();
+}
+
+// --- Selective upload ----------------------------------------------------
+
+// An entry's upload state: "omit" or "uploaded" when set, else "initial".
+function uploadStateOf(entry) {
+  return entry.uploadState === "omit" || entry.uploadState === "uploaded"
+    ? entry.uploadState
+    : "initial";
+}
+
+// A poster can only be uploaded once it has both a title and a venue (the
+// effective values, falling back to scraped data). Incomplete ones are skipped
+// by the Upload button and flagged red on their state toggle.
+function isUploadable(entry) {
+  return Boolean(displayTitle(entry).trim() && displayVenue(entry).trim());
+}
+
+// Advance a poster's state one step round the cycle and re-render.
+async function cycleUploadState(entry) {
+  await persistUploadState(entry.id, UPLOAD_CYCLE[uploadStateOf(entry)]);
+  await render();
+}
+
+// Save an entry's upload state (PATCH; falls back to local storage offline).
+async function persistUploadState(id, state) {
+  try {
+    const res = await fetch(`${SERVER_URL}/captures/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadState: state }),
+    });
+    if (!res.ok) throw new Error(`server responded ${res.status}`);
+  } catch {
+    await patchLocalEntry(id, { uploadState: state });
+  }
+}
+
+// Open every currently-rendered month section (and remember it, so the state
+// survives the next re-render).
+function expandAllMonths() {
+  for (const el of catalogEl.querySelectorAll(".month")) {
+    el.classList.remove("collapsed");
+    monthState.set(el.dataset.month, true);
+  }
+}
+
+// Build the Basic-auth header, prompting for (and locally saving) the username
+// and app password the first time. Returns null if the user cancels. WordPress
+// strips non-alphanumerics on auth, so the display spaces in the password are
+// dropped.
+async function getUploadAuth() {
+  let { [UPLOAD_USER_KEY]: user, [UPLOAD_PASSWORD_KEY]: password } =
+    await chrome.storage.local.get([UPLOAD_USER_KEY, UPLOAD_PASSWORD_KEY]);
+  if (!user || !password) {
+    const enteredUser = window.prompt(
+      "gigiau.uk username:\nSaved in this browser only, not in the extension's code.",
+      user || UPLOAD_USER_DEFAULT
+    );
+    if (!enteredUser || !enteredUser.trim()) return null;
+    user = enteredUser.trim();
+    const enteredPass = window.prompt(
+      `Application password for "${user}":\nSaved in this browser only, not in the extension's code.`
+    );
+    if (!enteredPass || !enteredPass.trim()) return null;
+    password = enteredPass.trim();
+    await chrome.storage.local.set({
+      [UPLOAD_USER_KEY]: user,
+      [UPLOAD_PASSWORD_KEY]: password,
+    });
+  }
+  return "Basic " + btoa(`${user}:${password.replace(/\s+/g, "")}`);
+}
+
+// Drop the saved (e.g. wrong) credentials so the next upload prompts again.
+async function forgetUploadCredentials() {
+  await chrome.storage.local.remove([UPLOAD_USER_KEY, UPLOAD_PASSWORD_KEY]);
+}
+
+// Upload every still-initial event to the external site, marking each
+// "uploaded" as it succeeds. Failures are counted and left in the initial state
+// so a retry picks them up again.
+async function uploadInitial() {
+  const captures = await loadCaptures();
+  const initial = captures.filter((e) => uploadStateOf(e) === "initial");
+  // Skip (and leave initial) any missing a title or venue — the red-flagged ones.
+  const pending = initial.filter(isUploadable);
+  const skipped = initial.length - pending.length;
+  if (pending.length === 0) {
+    showStatus(
+      skipped
+        ? `Nothing to upload — ${skipped} event${skipped === 1 ? "" : "s"} still need a title and venue.`
+        : "Nothing to upload — no events in the initial state."
+    );
+    return;
+  }
+  const skipNote = skipped ? ` (${skipped} skipped — no title/venue)` : "";
+  if (
+    !window.confirm(
+      `Upload ${pending.length} event${pending.length === 1 ? "" : "s"} to gigiau.uk?${skipNote}`
+    )
+  ) {
+    return;
+  }
+
+  const auth = await getUploadAuth();
+  if (!auth) {
+    showStatus("Upload cancelled — no credentials entered.");
+    return;
+  }
+
+  uploadBtn.disabled = true;
+  let ok = 0;
+  let failed = 0;
+  let authFailed = false;
+  for (const entry of pending) {
+    showStatus(`Uploading ${ok + failed + 1} of ${pending.length}…`);
+    try {
+      await uploadOne(entry, auth);
+      await persistUploadState(entry.id, "uploaded");
+      ok++;
+    } catch (err) {
+      console.warn(`upload failed for ${entry.id}:`, err);
+      failed++;
+      // A rejected credential won't fix itself mid-run: forget it (so the next
+      // attempt re-prompts) and stop hammering the server.
+      if (err.status === 401 || err.status === 403) {
+        authFailed = true;
+        await forgetUploadCredentials();
+        break;
+      }
+    }
+  }
+  uploadBtn.disabled = false;
+  if (authFailed) {
+    showStatus("Upload failed — the credentials were rejected. Try again to re-enter them.");
+    await render();
+    return;
+  }
+  showStatus(
+    (failed
+      ? `Uploaded ${ok}, ${failed} failed — check the console for details.`
+      : `Uploaded ${ok} event${ok === 1 ? "" : "s"}.`) +
+      (skipped ? ` ${skipped} skipped (no title/venue).` : "")
+  );
+  await render();
+}
+
+// Post a single event to the site's REST API as multipart/form-data. The poster
+// bytes come from the local server (or a pending data URL); the browser sets the
+// multipart Content-Type (with boundary) itself, so we only add the auth header.
+async function uploadOne(entry, auth) {
+  const src = imageSrc(entry);
+  if (!src) throw new Error("no image to upload");
+  const imgRes = await fetch(src);
+  if (!imgRes.ok) throw new Error(`image fetch responded ${imgRes.status}`);
+  const blob = await imgRes.blob();
+
+  const form = new FormData();
+  form.append("title", uploadTitle(entry));
+  const start = uploadStart(entry);
+  if (start) form.append("dtstart", start);
+  const end = eventEndDateKey(entry);
+  if (end) form.append("dtend", end);
+  const venue = displayVenue(entry);
+  if (venue) form.append("venue", venue);
+  // Send the event's URL (user override, else the captured page URL) as the
+  // booking / more-info link when there is one.
+  const link = displayUrl(entry);
+  if (link) form.append("bookinglink", link);
+  const ext = (blob.type.split("/")[1] || "jpg").replace("jpeg", "jpg");
+  form.append("picture", blob, `${entry.id}.${ext}`);
+
+  const res = await fetch(UPLOAD_URL, {
+    method: "POST",
+    headers: { Authorization: auth },
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    const err = new Error(`upload responded ${res.status} ${detail.slice(0, 200)}`);
+    err.status = res.status; // let the caller special-case auth rejections
+    throw err;
+  }
+}
+
+// The event's title for upload; falls back to the caption, then a placeholder,
+// since the API requires a title.
+function uploadTitle(entry) {
+  return (
+    displayTitle(entry) ||
+    (entry.caption && entry.caption.trim().slice(0, 100)) ||
+    "Untitled event"
+  );
+}
+
+// "YYYY-MM-DD" (plus " HH:MM" when a start time is known) for the API's
+// dtstart, using the date the poster is filed under. "" for undated ("unknown")
+// events — the API then defaults them to today.
+function uploadStart(entry) {
+  const key = dateKey(entry);
+  if (key === "unknown") return "";
+  const time = eventTimeKey(entry);
+  return time ? `${key} ${time}` : key;
 }
 
 // --- Local-storage fallbacks ---------------------------------------------

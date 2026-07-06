@@ -41,11 +41,17 @@ async function buildCapture(hint) {
   const img = findTargetImage(hint);
   if (!img) return null;
 
+  // On an event page the poster *is* the cover photo, and og:image gives its
+  // canonical full-res URL — better than a downscaled DOM <img>. Prefer it, but
+  // only when the user didn't right-click a *specific* image (hint.srcUrl): a
+  // deliberate right-click on some other photo should still be honoured.
+  const cover = onEventPage() && !hint?.srcUrl ? metaContent("og:image") : null;
+
   // Only report the URL and metadata here. The service worker fetches the
   // actual bytes — content scripts run in the page origin and are CORS-blocked
   // from fbcdn, which previously left captures with no image (and no hash).
   return {
-    imageUrl: bestResolutionUrl(img),
+    imageUrl: cover || bestResolutionUrl(img),
     caption: findCaption(img),
     event: scrapeEventDetails(),
     pageUrl: hint?.pageUrl || location.href,
@@ -91,8 +97,34 @@ function findCaption(img) {
   return text.trim().slice(0, 2000);
 }
 
-// On a proper Facebook Event page, structured data is exposed via JSON-LD.
-function scrapeEventDetails() {
+// Are we on a Facebook event page (facebook.com/events/<id>/)?
+function onEventPage() {
+  return /\/events\/\d+/.test(location.pathname);
+}
+
+// First non-empty content of a <meta property=…> or <meta name=…> tag.
+function metaContent(...keys) {
+  for (const key of keys) {
+    const el =
+      document.querySelector(`meta[property="${key}"]`) ||
+      document.querySelector(`meta[name="${key}"]`);
+    const v = el?.getAttribute("content")?.trim();
+    if (v) return v;
+  }
+  return null;
+}
+
+// FB titles the head/document as "<Event name> | Facebook" (or " - Facebook").
+// Strip that suffix; reject a bare "Facebook" (feed pages with no event name).
+function cleanEventName(s) {
+  const name = (s || "").replace(/\s*[|\-–]\s*Facebook\s*$/i, "").trim();
+  return name && !/^facebook$/i.test(name) ? name : null;
+}
+
+// Pull an Event object out of JSON-LD, if present. This is the only source that
+// reliably carries a venue, but it's frequently *absent* on logged-in SPA
+// sessions — hence the meta/title fallbacks in scrapeEventDetails().
+function scrapeEventJsonLd() {
   for (const node of document.querySelectorAll('script[type="application/ld+json"]')) {
     try {
       const data = JSON.parse(node.textContent);
@@ -111,5 +143,32 @@ function scrapeEventDetails() {
     }
   }
   return null;
+}
+
+// Structured event details, merged from most- to least-reliable sources:
+// JSON-LD (clean, has venue, but often missing) → og:/event: meta tags in the
+// server-rendered head (survive when JSON-LD is gone) → the document title
+// (name of last resort). Venue only comes from JSON-LD; DOM scraping it is too
+// fragile to trust. The meta/title fallbacks are gated to event pages: off one,
+// og:title/document.title are just "Facebook" or a person's name, not an event.
+function scrapeEventDetails() {
+  const jsonLd = scrapeEventJsonLd();
+  const meta = onEventPage()
+    ? {
+        name: cleanEventName(metaContent("og:title")) || cleanEventName(document.title),
+        startDate: metaContent("event:start_time", "og:start_time"),
+        endDate: metaContent("event:end_time", "og:end_time"),
+      }
+    : {};
+
+  const details = {
+    name: jsonLd?.name || meta.name || null,
+    startDate: jsonLd?.startDate || meta.startDate || null,
+    endDate: jsonLd?.endDate || meta.endDate || null,
+    venue: jsonLd?.venue || null,
+  };
+  // Nothing worth reporting? Say so, so the entry stays purely image-derived.
+  if (!details.name && !details.startDate && !details.venue) return null;
+  return details;
 }
 })();

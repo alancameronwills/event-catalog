@@ -108,9 +108,14 @@ moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
   worker fetches the bytes (it can, via `host_permissions`) and encodes them.
   Service workers have no `FileReader`, hence the manual ArrayBuffer→base64.
 - `content.js` — runs on Facebook; finds the image, picks best-resolution from
-  `srcset`, scrapes caption + JSON-LD event data. Wrapped in a guarded IIFE so
-  it's safe to inject more than once (the SW injects on demand into tabs that
-  predate the extension). It does **not** fetch bytes.
+  `srcset`, scrapes caption + structured event data. `scrapeEventDetails()`
+  merges most→least reliable: JSON-LD (only source with a **venue**, but often
+  absent on logged-in SPA sessions) → `og:`/`event:` head meta → document title;
+  the meta/title fallbacks are gated to `/events/<id>` pages (elsewhere those are
+  just "Facebook"). On an event page it also prefers the `og:image` cover as the
+  poster (unless the user right-clicked a specific other image). Wrapped in a
+  guarded IIFE so it's safe to inject more than once (the SW injects on demand
+  into tabs that predate the extension). It does **not** fetch bytes.
 - `sidepanel/` — the catalog UI: a date-grouped grid bucketed into collapsible
   **month** sections (earliest first; the current month starts open, others
   collapsed, and toggles persist across re-renders via `monthState`). Also:

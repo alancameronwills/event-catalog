@@ -109,13 +109,21 @@ moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
   Service workers have no `FileReader`, hence the manual ArrayBuffer→base64.
 - `content.js` — runs on Facebook; finds the image, picks best-resolution from
   `srcset`, scrapes caption + structured event data. `scrapeEventDetails()`
-  merges most→least reliable: JSON-LD (only source with a **venue**, but often
-  absent on logged-in SPA sessions) → `og:`/`event:` head meta → document title;
-  the meta/title fallbacks are gated to `/events/<id>` pages (elsewhere those are
-  just "Facebook"). On an event page it also prefers the `og:image` cover as the
-  poster (unless the user right-clicked a specific other image). Wrapped in a
-  guarded IIFE so it's safe to inject more than once (the SW injects on demand
-  into tabs that predate the extension). It does **not** fetch bytes.
+  merges most→least reliable: JSON-LD → `og:`/`event:` head meta → the visible
+  event-page **header DOM** → document title. On logged-in SPA sessions JSON-LD
+  and event:* meta are usually *absent*, so the header DOM is the practical
+  source for date and venue: `scrapeEventHeaderFromDom()` anchors on the title
+  leaf and reads the date line just above it and the venue line just below (FB
+  order is date → title → venue). `parseHeaderDate()` resolves relative forms
+  ("Today"/"Tomorrow"/weekday names, and ranges like "Saturday from 10:00-12:30")
+  against the capture time into a local-naive ISO `startDate` with the start time
+  embedded. All of this (and the meta/title name fallbacks) is gated to
+  `/events/<id>` pages — elsewhere og:title/document.title are just "Facebook".
+  On an event page it also prefers the `og:image` cover as the poster (unless the
+  user right-clicked a specific other image). Header scraping is best-effort and
+  expected to need maintenance as FB's DOM shifts. Wrapped in a guarded IIFE so
+  it's safe to inject more than once (the SW injects on demand into tabs that
+  predate the extension). It does **not** fetch bytes.
 - `sidepanel/` — the catalog UI: a date-grouped grid bucketed into collapsible
   **month** sections (earliest first; the current month starts open, others
   collapsed, and toggles persist across re-renders via `monthState`). Also:

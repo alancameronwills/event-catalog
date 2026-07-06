@@ -121,9 +121,124 @@ function cleanEventName(s) {
   return name && !/^facebook$/i.test(name) ? name : null;
 }
 
+// --- Event-page header DOM parsing --------------------------------------
+//
+// On logged-in SPA sessions FB event pages often carry *no* JSON-LD and no
+// event:* meta, so the date and venue live only as visible text. The header
+// reads, in DOM order: <date/time line> → <title> → <venue line>. So we anchor
+// on the title leaf and read its immediate neighbours. Fragile by nature (FB's
+// classes are obfuscated and change often) — hence purely best-effort.
+
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec";
+const pad2 = (n) => String(n).padStart(2, "0");
+const monthIndex = (s) => MONTHS.split("|").indexOf(s.slice(0, 3).toLowerCase());
+const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+// First clock time in a header line → "HH:MM" (24h). Handles "10:00" (and
+// ranges like "10:00-12:30", taking the start) and 12h "7pm" / "7:30 PM". Try
+// the am/pm form first, otherwise a bare "7:30" matches the 24h branch before
+// its "pm" is seen and comes out as 07:30 instead of 19:30.
+function parseHeaderTime(text) {
+  let m = text.match(/\b(\d{1,2})(?::([0-5]\d))?\s*([ap])\.?m\.?\b/i);
+  if (m) {
+    let h = +m[1] % 12;
+    if (/p/i.test(m[3])) h += 12;
+    return `${pad2(h)}:${m[2] || "00"}`;
+  }
+  m = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (m) return `${pad2(+m[1])}:${m[2]}`;
+  return null;
+}
+
+// The next date on/after `now` whose weekday matches (1..7 days out). A bare
+// weekday name means the upcoming one — if it were today FB would say "Today".
+function nextWeekday(now, targetDow) {
+  const d = startOfDay(now);
+  let add = (targetDow - d.getDay() + 7) % 7;
+  if (add === 0) add = 7;
+  d.setDate(d.getDate() + add);
+  return d;
+}
+
+// Parse a FB header date/time line into an ISO string the rest of the pipeline
+// understands: "YYYY-MM-DDTHH:MM:00" (local-naive) when a time is present, else
+// "YYYY-MM-DD". Resolves relative forms ("Today", "Tomorrow", weekday names)
+// against `now`; also handles "18 July 2026" / "July 18". Returns null if the
+// text isn't a recognisable date — which also serves as our "is this a date
+// line?" test. Time is embedded so the panel's structuredStartTime() finds it.
+function parseHeaderDate(text, now) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  const time = parseHeaderTime(text);
+  let date = null;
+
+  if (/\btoday\b/.test(lower)) {
+    date = startOfDay(now);
+  } else if (/\btomorrow\b/.test(lower)) {
+    date = startOfDay(now);
+    date.setDate(date.getDate() + 1);
+  } else {
+    // Explicit day + month, in either order ("18 July", "July 18").
+    let m =
+      lower.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTHS})`)) ||
+      lower.match(new RegExp(`\\b(${MONTHS})\\w*\\s+(\\d{1,2})`));
+    if (m) {
+      const dayFirst = /^\d/.test(m[1]);
+      const day = +(dayFirst ? m[1] : m[2]);
+      const month = monthIndex(dayFirst ? m[2] : m[1]);
+      const yr = (text.match(/\b(20\d\d)\b/) || [])[1];
+      date = new Date(yr ? +yr : now.getFullYear(), month, day);
+      // No year given → assume the next future occurrence, not one in the past.
+      if (!yr && date < startOfDay(now)) date = new Date(now.getFullYear() + 1, month, day);
+    } else {
+      const dow = WEEKDAYS.findIndex((w) => new RegExp(`\\b${w}\\b`).test(lower));
+      if (dow >= 0) date = nextWeekday(now, dow);
+    }
+  }
+  if (!date || Number.isNaN(date.getTime())) return null;
+  const iso = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  return time ? `${iso}T${time}:00` : iso;
+}
+
+// A leaf just below the title is the venue unless it's a FB UI label or itself
+// a date line.
+function isLikelyVenue(text) {
+  if (!text || text.length < 3) return false;
+  if (/^(interested|going|maybe|details|share|invite|save|guests?|see more|see all)$/i.test(text)) {
+    return false;
+  }
+  return !parseHeaderDate(text, new Date());
+}
+
+// Anchor on the header title leaf (its text === the event name) and read the
+// date line above it and venue line below. Prefers the occurrence whose line
+// above parses as a date, so we skip stray copies of the title elsewhere on the
+// page (sidebar, breadcrumbs).
+function scrapeEventHeaderFromDom(name, now) {
+  if (!name) return {};
+  const leaves = [...document.querySelectorAll("h1,h2,h3,span,div,a")].filter(
+    (e) => e.childElementCount === 0 && e.textContent.trim()
+  );
+  const matches = [];
+  leaves.forEach((e, i) => {
+    if (e.textContent.trim() === name) matches.push(i);
+  });
+  let idx = matches.find((i) => i > 0 && parseHeaderDate(leaves[i - 1].textContent, now));
+  if (idx === undefined) idx = matches[0];
+  if (idx === undefined) return {};
+
+  const above = idx > 0 ? leaves[idx - 1].textContent.trim() : "";
+  const below = idx + 1 < leaves.length ? leaves[idx + 1].textContent.trim() : "";
+  return {
+    startDate: parseHeaderDate(above, now),
+    venue: isLikelyVenue(below) ? below : null,
+  };
+}
+
 // Pull an Event object out of JSON-LD, if present. This is the only source that
 // reliably carries a venue, but it's frequently *absent* on logged-in SPA
-// sessions — hence the meta/title fallbacks in scrapeEventDetails().
+// sessions — hence the meta/DOM fallbacks in scrapeEventDetails().
 function scrapeEventJsonLd() {
   for (const node of document.querySelectorAll('script[type="application/ld+json"]')) {
     try {
@@ -153,7 +268,8 @@ function scrapeEventJsonLd() {
 // og:title/document.title are just "Facebook" or a person's name, not an event.
 function scrapeEventDetails() {
   const jsonLd = scrapeEventJsonLd();
-  const meta = onEventPage()
+  const onEvent = onEventPage();
+  const meta = onEvent
     ? {
         name: cleanEventName(metaContent("og:title")) || cleanEventName(document.title),
         startDate: metaContent("event:start_time", "og:start_time"),
@@ -161,11 +277,23 @@ function scrapeEventDetails() {
       }
     : {};
 
+  const name = jsonLd?.name || meta.name || null;
+
+  // Last resort for date/venue: read the visible event-page header. Only bother
+  // when we have a name to anchor on and a structured source didn't already
+  // supply the value.
+  const needsDate = !(jsonLd?.startDate || meta.startDate);
+  const needsVenue = !jsonLd?.venue;
+  const dom =
+    onEvent && name && (needsDate || needsVenue)
+      ? scrapeEventHeaderFromDom(name, new Date())
+      : {};
+
   const details = {
-    name: jsonLd?.name || meta.name || null,
-    startDate: jsonLd?.startDate || meta.startDate || null,
+    name,
+    startDate: jsonLd?.startDate || meta.startDate || dom.startDate || null,
     endDate: jsonLd?.endDate || meta.endDate || null,
-    venue: jsonLd?.venue || null,
+    venue: jsonLd?.venue || dom.venue || null,
   };
   // Nothing worth reporting? Say so, so the entry stays purely image-derived.
   if (!details.name && !details.startDate && !details.venue) return null;

@@ -161,13 +161,34 @@ function nextWeekday(now, targetDow) {
   return d;
 }
 
+// A bare 1..31 → day-of-month, else null. FB's header shows a "day-only" line
+// ("Saturday …") next to a calendar box carrying the day number (e.g. "11").
+function parseBoxDay(text) {
+  const m = (text || "").trim().match(/^(\d{1,2})$/);
+  const day = m ? +m[1] : 0;
+  return day >= 1 && day <= 31 ? day : null;
+}
+
+// The nearest date on/after `now` matching *both* a weekday and a day-of-month.
+// Using the box day pins the month/year exactly — a bare weekday alone could
+// resolve to the wrong week for an event more than 7 days out that FB still
+// renders day-only. Searches ~14 months, enough to hit any weekday+day pairing.
+function dateFromWeekdayAndDay(now, targetDow, day) {
+  const d = startOfDay(now);
+  for (let i = 0; i < 420; i++) {
+    if (d.getDate() === day && d.getDay() === targetDow) return new Date(d);
+    d.setDate(d.getDate() + 1);
+  }
+  return null;
+}
+
 // Parse a FB header date/time line into an ISO string the rest of the pipeline
 // understands: "YYYY-MM-DDTHH:MM:00" (local-naive) when a time is present, else
 // "YYYY-MM-DD". Resolves relative forms ("Today", "Tomorrow", weekday names)
 // against `now`; also handles "18 July 2026" / "July 18". Returns null if the
 // text isn't a recognisable date — which also serves as our "is this a date
 // line?" test. Time is embedded so the panel's structuredStartTime() finds it.
-function parseHeaderDate(text, now) {
+function parseHeaderDate(text, now, boxDay = null) {
   if (!text) return null;
   const lower = text.toLowerCase();
   const time = parseHeaderTime(text);
@@ -192,8 +213,12 @@ function parseHeaderDate(text, now) {
       // No year given → assume the next future occurrence, not one in the past.
       if (!yr && date < startOfDay(now)) date = new Date(now.getFullYear() + 1, month, day);
     } else {
+      // Day-only line ("Saturday …"): pin the exact date with the calendar-box
+      // day number when we have it, else settle for the next such weekday.
       const dow = WEEKDAYS.findIndex((w) => new RegExp(`\\b${w}\\b`).test(lower));
-      if (dow >= 0) date = nextWeekday(now, dow);
+      if (dow >= 0) {
+        date = (boxDay && dateFromWeekdayAndDay(now, dow, boxDay)) || nextWeekday(now, dow);
+      }
     }
   }
   if (!date || Number.isNaN(date.getTime())) return null;
@@ -230,8 +255,10 @@ function scrapeEventHeaderFromDom(name, now) {
 
   const above = idx > 0 ? leaves[idx - 1].textContent.trim() : "";
   const below = idx + 1 < leaves.length ? leaves[idx + 1].textContent.trim() : "";
+  // The calendar-box day number sits just above the (day-only) date line.
+  const boxDay = idx > 1 ? parseBoxDay(leaves[idx - 2].textContent) : null;
   return {
-    startDate: parseHeaderDate(above, now),
+    startDate: parseHeaderDate(above, now, boxDay),
     venue: isLikelyVenue(below) ? below : null,
   };
 }

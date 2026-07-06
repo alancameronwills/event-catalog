@@ -117,7 +117,11 @@ moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
   order is date → title → venue). `parseHeaderDate()` resolves relative forms
   ("Today"/"Tomorrow"/weekday names, and ranges like "Saturday from 10:00-12:30")
   against the capture time into a local-naive ISO `startDate` with the start time
-  embedded. All of this (and the meta/title name fallbacks) is gated to
+  embedded. FB renders a *day-only* line for near dates, with the actual
+  day-of-month in a calendar box just above it; that number (`parseBoxDay()`) is
+  passed in to pin the exact month/year (`dateFromWeekdayAndDay()`) rather than
+  guessing "the next Saturday", which would be wrong for events >7 days out that
+  are still shown day-only. All of this (and the meta/title name fallbacks) is gated to
   `/events/<id>` pages — elsewhere og:title/document.title are just "Facebook".
   On an event page it also prefers the `og:image` cover as the poster (unless the
   user right-clicked a specific other image). Header scraping is best-effort and

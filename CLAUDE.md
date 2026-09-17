@@ -5,11 +5,15 @@ build order; this file captures how things actually fit together now.
 
 ## What this is
 
-A personal "assisted capture" tool for saving Facebook event posters into a
-local, date-organized catalog with duplicate detection. Two halves:
+A personal "assisted capture" tool for saving event posters into a local,
+date-organized catalog with duplicate detection. Two halves:
 
 - **`extension/`** — a Chrome MV3 extension. Right-click (or Ctrl+Shift+E) a
-  poster on Facebook to capture it; a side panel shows the catalog.
+  poster on *any* web page to capture it; a side panel shows the catalog. The
+  content script runs on `<all_urls>` and `host_permissions` is `http(s)://*/*`
+  (the service worker needs it to fetch image bytes from any CDN). Capture and
+  generic scraping (image, caption, JSON-LD Event) work everywhere; the
+  Facebook-specific enrichment stays gated to FB event pages (`onEventPage()`).
 - **`server/`** — a local Node HTTP server that stores images on disk, keeps a
   JSON index, perceptually-hashes for duplicates, and OCRs posters for dates.
 
@@ -26,24 +30,39 @@ Load the extension unpacked at `chrome://extensions` (Developer mode → Load
 unpacked → `extension/`). After editing extension files, reload it there (↻).
 
 **The server does not hot-reload.** After changing anything in `server/`, kill
-the running process and restart it, or changes won't take effect. Typical loop:
+the running process and restart it, or changes won't take effect. On Windows:
 find the PID on 3777 (`netstat -ano | grep :3777`), `taskkill //PID <pid> //F`,
-then `node server.js`. This is a common footgun — a "fix didn't work" is often
-just a stale server.
+then `node server.js`. On macOS: `lsof -ti:3777 | xargs kill`, then `node
+server.js`. This is a common footgun — a "fix didn't work" is often just a
+stale server.
 
-Two conveniences avoid the manual start: `start-server.cmd` (repo root) is an
-idempotent, double-clickable launcher (no-op if `/health` already answers; good
-for `shell:startup`). And `native-host/` registers a Chrome **native-messaging**
-host so the side panel auto-starts the server on load when it's down — the panel
-calls `ensureServerRunning()` (see `sidepanel.js`), which messages
-`com.cameronwills.event_catalog`; the host (`host.mjs`, launched via
-`event_catalog_host.bat`) spawns `node server.js` detached and exits. Requires a
-one-time `native-host/install.cmd <extension-id>` and the `nativeMessaging`
-manifest permission. Neither of these hot-reloads either — restarting after
-`server/` edits still means killing the process by hand.
+Two conveniences avoid the manual start: `event catalog server.cmd` (Windows)
+/ `event catalog server.command` (macOS) — both at the repo root — are an
+idempotent, double-clickable launcher (no-op if `/health` already answers;
+good for `shell:startup` / Login Items). And `native-host/` registers a Chrome
+**native-messaging** host so the side panel auto-starts the server on load
+when it's down — the panel calls `ensureServerRunning()` (see `sidepanel.js`),
+which messages `com.cameronwills.event_catalog`; the host (`host.mjs`) spawns
+`node server.js` detached and exits, launched via `event_catalog_host.bat` on
+Windows or `event_catalog_host.sh` on macOS. Requires a one-time
+`native-host/install.cmd <extension-id>` (Windows) or `native-host/install.sh
+<extension-id>` (macOS) and the `nativeMessaging` manifest permission. Neither
+of these hot-reloads either — restarting after `server/` edits still means
+killing the process by hand.
 
-Windows box; the Bash tool is Git Bash. `/tmp` resolves to `C:\tmp` for Node
-(which usually doesn't exist) — use the scratchpad dir for temp files instead.
+**Cross-platform:** the extension and server code are plain, portable
+JS/Node — no platform-specific logic. Chrome loads the unpacked `extension/`
+folder identically on macOS. The only Windows-specific pieces are the
+launcher/installer scripts above, which have macOS counterparts. One gotcha:
+`server/node_modules` is checked into git and currently holds the Windows
+`sharp` binary (`@img/sharp-win32-x64`); after cloning onto a Mac, run `npm
+install` inside `server/` so npm also pulls the matching
+`@img/sharp-darwin-x64` or `-arm64` optional dependency, or `sharp` will fail
+to load at runtime.
+
+This dev machine is Windows; the Bash tool here is Git Bash. `/tmp` resolves
+to `C:\tmp` for Node (which usually doesn't exist) — use the scratchpad dir
+for temp files instead.
 
 ## Server layout & data model
 
@@ -76,14 +95,20 @@ the *date* parse — but it still OCRs to pull a **start time** off the poster.
 
 **Start time** is a separate, display-only value (it doesn't affect the folder):
 precedence `assignedTime` → the time in structured `event.startDate` →
-`ocrTime`, surfaced by `eventTimeKey()` in the panel and editable via the
-editor's Time field.
+`ocrTime`, surfaced by `eventTimeKey()` in the panel. Date and time are edited
+together in one `datetime-local` **Start** field; on save `splitStart()` splits
+it back into `assignedDate` (grouping) and `assignedTime` (display). Midnight is
+treated as "no time" — the field always carries one, so an unknown time would
+otherwise be saved as a spurious 00:00. A blank/unknown date defaults the field
+to today.
 
 An index entry: `id, capturedAt, assignedDate, eventDate, imageFile, imageUrl,
 caption, event{name,startDate,endDate,venue}, pageUrl, pageTitle, title, venue,
-url, assignedTime, hash, ocrText, ocrDate, ocrTime, duplicateOf,
+url, dtinfo, assignedTime, hash, ocrText, ocrDate, ocrTime, duplicateOf,
 duplicateDistance, uploadState`. `title/venue/url/assignedTime` are user
-overrides that fall back to scraped/OCR'd values in the UI.
+overrides that fall back to scraped/OCR'd values in the UI; `dtinfo` is a
+user-only free-text date/time note (no scraped fallback), sent to the upload
+API's `dtinfo` field.
 
 **Upload state** (`uploadState`) drives the *selective upload* feature: `null`
 (the default) = "initial" / a candidate to upload; `"omit"` = skip; `"uploaded"`
@@ -95,7 +120,7 @@ normalizes back to `null`.
 
 `GET /health`, `GET|POST /captures` (POST accepts an optional `assignedDate` to
 pin the date — still OCRs for a start time), `PATCH /captures/:id` (assignedDate
-moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
+moves the file; title/venue/url/dtinfo/assignedTime/uploadState are metadata), `DELETE
 /captures/:id`, `GET|POST /dates`, `DELETE /dates/:date`, `GET /venues`
 (distinct venue names for autocomplete), `POST /backfill-images`, `GET
 /images/<folder>/<file>`.
@@ -107,7 +132,7 @@ moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
   run in the page origin and are CORS-blocked from `fbcdn.net`, so the service
   worker fetches the bytes (it can, via `host_permissions`) and encodes them.
   Service workers have no `FileReader`, hence the manual ArrayBuffer→base64.
-- `content.js` — runs on Facebook; finds the image, picks best-resolution from
+- `content.js` — runs on every page; finds the image, picks best-resolution from
   `srcset`, scrapes caption + structured event data. `scrapeEventDetails()`
   merges most→least reliable: JSON-LD → `og:`/`event:` head meta → the visible
   event-page **header DOM** → document title. On logged-in SPA sessions JSON-LD
@@ -132,7 +157,8 @@ moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
   **month** sections (earliest first; the current month starts open, others
   collapsed, and toggles persist across re-renders via `monthState`). Also:
   drag/copy-paste to move posters between dates, click-to-enlarge lightbox, a
-  bottom-docked edit form (title/venue/date/time/url + duplicate warning) that
+  bottom-docked edit form (title/venue/start date+time/end date/dtinfo/url +
+  duplicate warning) that
   also opens on capture, and delete. The Venue field autocompletes from a native
   `<datalist>` populated (each render) from `GET /venues` unioned with venues on
   the loaded captures. Server is the source of truth; pending local captures
@@ -148,7 +174,9 @@ moves the file; title/venue/url/assignedTime/uploadState are metadata), `DELETE
       incomplete posters stay initial for a retry). A successful run reloads any
       open tab showing the listing (`refreshUploadTargetTabs()` — any
       `gigiau.uk/pawb` path; uses the site host permission, no `tabs` perm
-      needed) so new posters appear. The poster URL is sent as the API's
+      needed) so new posters appear. `uploadOne()` sends the multipart fields
+      `title`, `dtstart`, `dtend`, `venue`, `dtinfo` (the free-text date/time
+      note), `bookinglink` (the poster URL), and `picture`. The poster URL as
       `bookinglink`; `displayUrl()`/`specificPageUrl()` drop a bare
       `facebook.com` root so it isn't used as a link. Only the upload URL is a
       constant in `sidepanel.js`; the WordPress **username and (secret) app

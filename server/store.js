@@ -112,6 +112,8 @@ export async function addCapture(capture) {
     title: null,
     venue: null,
     url: null,
+    // Free-text date/time note, sent to the upload API's dtinfo field.
+    dtinfo: null,
     // Start time override (HH:MM); falls back to the structured/OCR time.
     assignedTime: isTimeString(capture.assignedTime) ? capture.assignedTime : null,
     // Optional end date (YYYY-MM-DD) for multi-day events; null = single day.
@@ -337,8 +339,8 @@ export async function updateCapture(id, patch) {
 
     // Optional user-editable metadata. Empty/blank clears the field (falls back
     // to scraped values in the UI).
-    const MAX = { title: 300, venue: 300, url: 2000 };
-    for (const field of ["title", "venue", "url"]) {
+    const MAX = { title: 300, venue: 300, url: 2000, dtinfo: 500 };
+    for (const field of ["title", "venue", "url", "dtinfo"]) {
       if (field in patch) {
         const value = patch[field];
         entry[field] =

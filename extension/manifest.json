@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Event Poster Catalog",
   "version": "0.1.0",
-  "description": "Assisted capture of Facebook event posters into a local, date-organized catalog with duplicate detection.",
+  "description": "Assisted capture of event posters from any web page into a local, date-organized catalog with duplicate detection.",
   "permissions": [
     "contextMenus",
     "sidePanel",
@@ -11,22 +11,15 @@
     "nativeMessaging"
   ],
   "host_permissions": [
-    "https://www.facebook.com/*",
-    "https://web.facebook.com/*",
-    "https://*.fbcdn.net/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*",
-    "https://gigiau.uk/*"
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": [
-        "https://www.facebook.com/*",
-        "https://web.facebook.com/*"
-      ],
+      "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

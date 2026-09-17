@@ -64,9 +64,11 @@
             <input type="text" id="editor-venue" autocomplete="off" list="venue-suggestions" />
             <datalist id="venue-suggestions"></datalist>
           </label>
-          <label>Date <input type="date" id="editor-date" /></label>
+          <label>Start <input type="datetime-local" id="editor-start" /></label>
           <label title="Only for multi-day events">End date <input type="date" id="editor-end-date" /></label>
-          <label>Time <input type="time" id="editor-time" /></label>
+          <label title="Free-text date/time note shown alongside the event (e.g. “Doors 7pm”, “Every Saturday”)">Date info
+            <input type="text" id="editor-dtinfo" autocomplete="off" placeholder="e.g. Doors 7pm" />
+          </label>
           <label>URL <input type="url" id="editor-url" autocomplete="off" placeholder="https://…" /></label>
         </div>
         <div class="editor-actions">

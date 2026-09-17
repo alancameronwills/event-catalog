@@ -60,9 +60,10 @@ async function captureImage(tabId, hint) {
     if (!capture) return;
 
     // Fetch the image bytes here in the service worker. Content scripts run in
-    // the page's origin and are CORS-blocked from fbcdn; the service worker can
-    // fetch hosts listed in host_permissions without CORS. Without the bytes
-    // there's no perceptual hash and therefore no duplicate detection.
+    // the page's origin and are CORS-blocked from image CDNs (e.g. fbcdn); the
+    // service worker can fetch hosts listed in host_permissions without CORS.
+    // Without the bytes there's no perceptual hash and therefore no duplicate
+    // detection.
     if (!capture.imageDataUrl && capture.imageUrl) {
       try {
         capture.imageDataUrl = await fetchImageDataUrl(capture.imageUrl);
@@ -77,7 +78,7 @@ async function captureImage(tabId, hint) {
     const message = /Receiving end does not exist|Could not establish connection/i.test(
       String(err)
     )
-      ? "Couldn't reach the page. Reload the Facebook tab and try again."
+      ? "Couldn't reach the page. Reload the tab and try again."
       : String(err.message || err);
     notifyPanel({ type: "CAPTURE_ERROR", message });
   }

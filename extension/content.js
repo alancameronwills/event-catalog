@@ -1,6 +1,9 @@
-// Content script: runs on Facebook pages. On request from the service worker,
+// Content script: runs on every page. On request from the service worker,
 // locates the target image, upgrades it to full resolution where possible, and
-// scrapes nearby caption text and (on Event pages) structured event details.
+// scrapes nearby caption text plus structured event details. The generic parts
+// (image selection, caption, JSON-LD Event) work anywhere; the Facebook-specific
+// scraping (og:/event: meta, header-DOM date/venue, og:image cover) is gated to
+// FB event pages via onEventPage().
 //
 // Facebook's DOM changes often; the image path is robust but the caption/date
 // scraping is best-effort and is expected to need occasional maintenance.
@@ -97,9 +100,16 @@ function findCaption(img) {
   return text.trim().slice(0, 2000);
 }
 
-// Are we on a Facebook event page (facebook.com/events/<id>/)?
+// Are we on a Facebook event page (facebook.com/events/<id>/)? Gated to the FB
+// host too: the extension now runs on every site, and the event-specific
+// scraping below (title "| Facebook" stripping, header-DOM date/venue, og:image
+// cover) is meaningless — and potentially wrong — on some other site that
+// happens to use an /events/<id> path.
 function onEventPage() {
-  return /\/events\/\d+/.test(location.pathname);
+  return (
+    /(^|\.)facebook\.com$/.test(location.hostname) &&
+    /\/events\/\d+/.test(location.pathname)
+  );
 }
 
 // First non-empty content of a <meta property=…> or <meta name=…> tag.

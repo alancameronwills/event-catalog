@@ -47,9 +47,9 @@ const editorForm = document.getElementById("editor-form");
 const editorDupWarning = document.getElementById("editor-dup-warning");
 const editorTitle = document.getElementById("editor-title");
 const editorVenue = document.getElementById("editor-venue");
-const editorDate = document.getElementById("editor-date");
+const editorStart = document.getElementById("editor-start");
 const editorEndDate = document.getElementById("editor-end-date");
-const editorTime = document.getElementById("editor-time");
+const editorDtinfo = document.getElementById("editor-dtinfo");
 const editorUrl = document.getElementById("editor-url");
 const editorCancel = document.getElementById("editor-cancel");
 const venueDatalist = document.getElementById("venue-suggestions");
@@ -742,16 +742,33 @@ function formatTime(hhmm) {
   return min === "00" ? `${h} ${ap}` : `${h}:${min} ${ap}`;
 }
 
+// Split the combined start field's "YYYY-MM-DDTHH:MM" into its stored parts.
+// Midnight is treated as "no time": datetime-local always carries a time, so a
+// poster with an unknown time shows T00:00 — saving that as a real 00:00 would
+// wrongly surface "12 AM" everywhere. A genuine midnight start isn't
+// representable here, an acceptable trade for not inventing times.
+function splitStart(value) {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(value || "");
+  if (!m) return { date: null, time: null };
+  const time = `${m[2]}:${m[3]}`;
+  return { date: m[1], time: time === "00:00" ? null : time };
+}
+
 // Edit mode: show the poster above, dock the form below; both close on
 // save/cancel.
 function openEditor(entry) {
   editingId = entry.id;
   editorTitle.value = displayTitle(entry);
   editorVenue.value = displayVenue(entry);
-  editorDate.value = eventDateKey(entry);
+  // Start date+time in one field. Default an unknown date to today (rather than
+  // leaving it blank) so a new capture starts on a real date; datetime-local
+  // needs a time component, so fall back to midnight when the time is unknown.
+  const startDate = eventDateKey(entry) || todayKey();
+  const startTime = eventTimeKey(entry) || "00:00";
+  editorStart.value = `${startDate}T${startTime}`;
   editorEndDate.value = eventEndDateKey(entry);
-  editorEndDate.min = editorDate.value || ""; // can't end before it starts
-  editorTime.value = eventTimeKey(entry);
+  editorEndDate.min = startDate; // can't end before it starts
+  editorDtinfo.value = entry.dtinfo || "";
   editorUrl.value = displayUrl(entry);
   showDuplicateWarning(entry);
 
@@ -855,12 +872,14 @@ function wireControls() {
     e.preventDefault();
     if (!editingId) return;
     const id = editingId;
-    const date = editorDate.value;
-    const time = editorTime.value;
+    // The single start field is "YYYY-MM-DDTHH:MM"; split it back into the
+    // separately-stored date (grouping key) and time (display-only) values.
+    const { date, time } = splitStart(editorStart.value);
     const end = editorEndDate.value;
     saveMetadata(id, {
       title: editorTitle.value,
       venue: editorVenue.value,
+      dtinfo: editorDtinfo.value,
       url: editorUrl.value,
       assignedDate: isDateString(date) ? date : null,
       assignedTime: isTimeString(time) ? time : null,
@@ -873,8 +892,8 @@ function wireControls() {
   });
   editorCancel.addEventListener("click", closeEditor);
   // Keep the end date from preceding the start as the start is edited.
-  editorDate.addEventListener("change", () => {
-    editorEndDate.min = editorDate.value || "";
+  editorStart.addEventListener("change", () => {
+    editorEndDate.min = splitStart(editorStart.value).date || "";
   });
 
   document.addEventListener("keydown", onKeydown);
@@ -1202,6 +1221,9 @@ async function uploadOne(entry, auth) {
   if (end) form.append("dtend", end);
   const venue = displayVenue(entry);
   if (venue) form.append("venue", venue);
+  // Free-text date/time note (user-entered only; no scraped fallback).
+  const dtinfo = (entry.dtinfo || "").trim();
+  if (dtinfo) form.append("dtinfo", dtinfo);
   // Send the event's URL (user override, else the captured page URL) as the
   // booking / more-info link when there is one.
   const link = displayUrl(entry);

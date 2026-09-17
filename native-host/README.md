@@ -5,6 +5,15 @@ when it isn't already running, so you don't have to start it by hand. When the
 panel loads and `http://127.0.0.1:3777/health` doesn't answer, it sends a
 message to this host, which spawns the server detached and exits.
 
+> **On macOS, most people don't need this.** `Setup Event Catalog.command` in
+> the repo root sets up a launchd background service that keeps the server
+> running all the time instead — simpler to install (one double-click, no
+> extension ID to copy into a Terminal command) and more robust (it restarts
+> itself if it ever crashes). With that running, `/health` always answers, so
+> the side panel never calls this native host at all. Use this native-messaging
+> host instead only if you specifically want on-demand start (server only runs
+> while the panel needs it) rather than always-on.
+
 Browsers can't start a local process directly; Chrome's [native messaging]
 API is the supported bridge. Only the extension listed in the host manifest's
 `allowed_origins` may talk to it.

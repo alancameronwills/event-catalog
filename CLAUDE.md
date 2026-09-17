@@ -53,12 +53,25 @@ killing the process by hand.
 **Cross-platform:** the extension and server code are plain, portable
 JS/Node — no platform-specific logic. Chrome loads the unpacked `extension/`
 folder identically on macOS. The only Windows-specific pieces are the
-launcher/installer scripts above, which have macOS counterparts. One gotcha:
-`server/node_modules` is checked into git and currently holds the Windows
-`sharp` binary (`@img/sharp-win32-x64`); after cloning onto a Mac, run `npm
-install` inside `server/` so npm also pulls the matching
-`@img/sharp-darwin-x64` or `-arm64` optional dependency, or `sharp` will fail
-to load at runtime.
+launcher/installer scripts above, which have macOS counterparts.
+`server/node_modules` is gitignored (native deps like `sharp` are
+platform-specific), so `npm install` must be run on each machine — the setup
+script below does this automatically on macOS.
+
+**Easiest macOS install (for a non-technical user):** `Setup Event
+Catalog.command` (repo root) is a one-shot, double-click setup — checks for
+Node (opening the install page if it's missing), runs `npm install`, and
+registers a **launchd** LaunchAgent (`~/Library/LaunchAgents/
+com.cameronwills.event-catalog-server.plist`, `RunAtLoad`+`KeepAlive`) so the
+server is always running in the background, restarting itself at login/crash.
+This sidesteps `native-host/` entirely: `ensureServerRunning()` in
+`sidepanel.js` only calls the native-messaging host when `/health` doesn't
+already answer, so with launchd keeping the server up, the side panel never
+needs it and the native-messaging install step (which requires copying an
+extension ID into a Terminal command) can be skipped. Logs go to
+`server/data/server.log`. The remaining step — loading the unpacked extension
+in Chrome — can't be scripted (Chrome requires a human click through
+Developer mode → Load unpacked); see the setup guide for that walkthrough.
 
 This dev machine is Windows; the Bash tool here is Git Bash. `/tmp` resolves
 to `C:\tmp` for Node (which usually doesn't exist) — use the scratchpad dir

@@ -1,2 +1,7 @@
 # Captured images and index live here at runtime.
 data/
+
+# Installed via `npm install`; package-lock.json pins versions. Platform-
+# specific native deps (sharp) mean a Windows checkout and a macOS checkout
+# need their own install anyway.
+node_modules/

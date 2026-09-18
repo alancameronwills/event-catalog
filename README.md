@@ -13,11 +13,9 @@ to keep running.
 ## Install (Windows or Mac — identical steps)
 
 1. **Get the code.**
-   - On the GitHub repo page, switch the branch selector to
-     `aws-shared-catalog` (not yet merged into `main` — check with whoever's
-     coordinating this if that's changed), then **Code → Download ZIP**.
+   - On the GitHub repo page, click **Code → Download ZIP**.
    - Unzip it somewhere permanent, e.g. your Documents folder.
-   - *(Technical alternative: `git clone -b aws-shared-catalog
+   - *(Technical alternative: `git clone
      https://github.com/alancameronwills/event-catalog.git`.)*
 
 2. **Load the extension in Chrome.**

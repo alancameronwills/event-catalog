@@ -7,12 +7,12 @@
 
 const STORAGE_KEY = "captures";
 const CREATED_DATES_KEY = "createdDates";
-const SERVER_URL = "http://127.0.0.1:3777";
 
-// Native-messaging host that launches the local server when it isn't running
-// (see native-host/). Registered per-user via native-host/install.cmd; the
-// panel messages it on load if /health doesn't answer.
-const NATIVE_HOST = "com.cameronwills.event_catalog";
+// Shared AWS backend (a Lambda Function URL — see aws/): everyone's install
+// talks to the same catalog, so there's no local server to start and the old
+// native-messaging auto-start is gone. Pay-per-use and always reachable.
+const API_URL = "https://hcpgo2xvwv5xbii7lbg36mrdue0hzwyt.lambda-url.eu-west-2.on.aws";
+const API_TOKEN_KEY = "apiToken";
 
 // External site to publish selected events to: a WordPress install running the
 // gigiau-events-posters plugin (see its README for the REST API).
@@ -65,72 +65,46 @@ let filterInitial = false; // when on, show only events still to upload
 const monthState = new Map(); // "YYYY-MM"|"unknown" -> open? (persists re-renders)
 
 document.addEventListener("DOMContentLoaded", async () => {
-  // Bring the local backend up first if it's down, so pruning and the first
-  // render see live server data instead of the offline fallback.
-  await ensureServerRunning();
   // Opening the catalog is the moment to clear out events that have already
-  // passed (see pruneOutdated); then draw what's left.
+  // passed (see pruneOutdated); then draw what's left. The first fetch this
+  // triggers prompts for the API token if it isn't saved yet (see apiFetch).
   await pruneOutdated();
   render();
   wireControls();
 });
 
-// --- Auto-start the local server -----------------------------------------
+// --- Talking to the shared backend ---------------------------------------
 
-let serverStartInFlight = false;
-
-async function serverHealthy() {
-  try {
-    const res = await fetch(`${SERVER_URL}/health`, { cache: "no-store" });
-    return res.ok;
-  } catch {
-    return false;
+// The shared secret every install must send as X-Api-Token (see aws/). Kept
+// in chrome.storage.local (this browser profile only) and prompted for once —
+// same pattern as the gigiau upload credentials below.
+async function getApiToken() {
+  let { [API_TOKEN_KEY]: token } = await chrome.storage.local.get(API_TOKEN_KEY);
+  if (!token) {
+    const entered = window.prompt(
+      "Event Catalog API token:\nAsk whoever set up the shared catalog for this. Saved in this browser only, not in the extension's code."
+    );
+    if (!entered) return null;
+    token = entered.trim();
+    await chrome.storage.local.set({ [API_TOKEN_KEY]: token });
   }
+  return token;
 }
 
-// If the local server isn't answering, ask the native host to launch it and
-// wait (up to ~10s) for it to come up. No-op when already healthy or when the
-// native host isn't installed. Guarded so overlapping callers don't fire twice;
-// the server also refuses a second port bind as a backstop.
-async function ensureServerRunning() {
-  if (serverStartInFlight) return;
-  if (await serverHealthy()) return;
-  serverStartInFlight = true;
-  try {
-    showStatus("Starting local server…");
-    await launchServerViaNativeHost();
-    for (let i = 0; i < 20; i++) {
-      await sleep(500);
-      if (await serverHealthy()) {
-        showStatus("Local server started.");
-        return;
-      }
-    }
-    // Couldn't confirm it came up: leave the panel in its offline fallback.
-    showStatus("Couldn't start the local server — is the native host installed?");
-  } finally {
-    serverStartInFlight = false;
-  }
+// Drop a saved (e.g. wrong) token so the next call prompts again.
+async function forgetApiToken() {
+  await chrome.storage.local.remove(API_TOKEN_KEY);
 }
 
-// Send one message to the native host, which spawns `node server.js`. A
-// lastError here (host missing, or it exited without replying) is not fatal:
-// we verify success by polling /health, so just resolve either way.
-function launchServerViaNativeHost() {
-  return new Promise((resolve) => {
-    try {
-      chrome.runtime.sendNativeMessage(NATIVE_HOST, { action: "start" }, () => {
-        void chrome.runtime.lastError;
-        resolve();
-      });
-    } catch {
-      resolve();
-    }
-  });
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// fetch() against the shared backend with the auth header attached. A 401
+// means a missing/wrong token, so forget it and let the next call re-prompt.
+async function apiFetch(path, options = {}) {
+  const token = await getApiToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers["x-api-token"] = token;
+  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  if (res.status === 401) await forgetApiToken();
+  return res;
 }
 
 // Re-render when a capture is added, and surface status messages.
@@ -161,7 +135,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 async function loadCaptures() {
   const { [STORAGE_KEY]: local = [] } = await chrome.storage.local.get(STORAGE_KEY);
   try {
-    const res = await fetch(`${SERVER_URL}/captures`);
+    const res = await apiFetch("/captures");
     if (!res.ok) throw new Error(`server responded ${res.status}`);
     const remote = await res.json();
     const remoteIds = new Set(remote.map((e) => e.id));
@@ -177,7 +151,7 @@ async function loadCreatedDates() {
     CREATED_DATES_KEY
   );
   try {
-    const res = await fetch(`${SERVER_URL}/dates`);
+    const res = await apiFetch("/dates");
     if (!res.ok) throw new Error(`server responded ${res.status}`);
     const remote = await res.json();
     return [...new Set([...remote, ...local])];
@@ -190,7 +164,7 @@ async function loadCreatedDates() {
 // whatever the loaded captures show (see populateVenueSuggestions).
 async function loadVenues() {
   try {
-    const res = await fetch(`${SERVER_URL}/venues`);
+    const res = await apiFetch("/venues");
     if (!res.ok) throw new Error(`server responded ${res.status}`);
     return await res.json();
   } catch {
@@ -805,7 +779,7 @@ function closeEditor() {
 
 async function saveMetadata(id, fields) {
   try {
-    const res = await fetch(`${SERVER_URL}/captures/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fields),
@@ -950,7 +924,7 @@ function onKeydown(e) {
 
 async function moveEntry(id, date) {
   try {
-    const res = await fetch(`${SERVER_URL}/captures/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ assignedDate: date }),
@@ -983,7 +957,7 @@ function confirmDelete(entry) {
 
 async function deleteEntry(id) {
   try {
-    const res = await fetch(`${SERVER_URL}/captures/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
     // 404 is fine — it may have only existed locally (pending capture).
@@ -1000,7 +974,7 @@ async function deleteEntry(id) {
 
 async function addDate(date) {
   try {
-    const res = await fetch(`${SERVER_URL}/dates`, {
+    const res = await apiFetch("/dates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ date }),
@@ -1016,7 +990,7 @@ async function addDate(date) {
 
 async function removeDate(date) {
   try {
-    const res = await fetch(`${SERVER_URL}/dates/${encodeURIComponent(date)}`, {
+    const res = await apiFetch(`/dates/${encodeURIComponent(date)}`, {
       method: "DELETE",
     });
     if (!res.ok) throw new Error(`server responded ${res.status}`);
@@ -1053,7 +1027,7 @@ async function cycleUploadState(entry) {
 // Save an entry's upload state (PATCH; falls back to local storage offline).
 async function persistUploadState(id, state) {
   try {
-    const res = await fetch(`${SERVER_URL}/captures/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ uploadState: state }),
@@ -1345,7 +1319,7 @@ async function pruneOutdated() {
 // (prune runs before the first render).
 async function purgeCapture(id) {
   try {
-    const res = await fetch(`${SERVER_URL}/captures/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
     if (!res.ok && res.status !== 404) throw new Error(`server responded ${res.status}`);
@@ -1357,7 +1331,7 @@ async function purgeCapture(id) {
 
 async function purgeDate(date) {
   try {
-    await fetch(`${SERVER_URL}/dates/${encodeURIComponent(date)}`, { method: "DELETE" });
+    await apiFetch(`/dates/${encodeURIComponent(date)}`, { method: "DELETE" });
   } catch {
     // Offline: local removal below still applies.
   }
@@ -1440,7 +1414,7 @@ async function saveDroppedCapture(imageDataUrl, date) {
     imageDataUrl,
   };
   try {
-    const res = await fetch(`${SERVER_URL}/captures`, {
+    const res = await apiFetch("/captures", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(entry),
@@ -1465,8 +1439,8 @@ async function storeLocalCapture(entry) {
 // --- Helpers -------------------------------------------------------------
 
 function imageSrc(entry) {
-  if (entry.imageFile) return `${SERVER_URL}/images/${entry.imageFile}`;
-  return entry.imageDataUrl || entry.imageUrl || "";
+  // entry.imageSrc is a direct (public) S3 URL returned by the API — see aws/.
+  return entry.imageSrc || entry.imageDataUrl || entry.imageUrl || "";
 }
 
 function showStatus(text) {

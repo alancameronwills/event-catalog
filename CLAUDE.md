@@ -6,7 +6,7 @@ build order; this file captures how things actually fit together now.
 ## What this is
 
 A personal "assisted capture" tool for saving event posters into a local,
-date-organized catalog with duplicate detection. Two halves:
+date-organized catalog with duplicate detection.
 
 - **`extension/`** — a Chrome MV3 extension. Right-click (or Ctrl+Shift+E) a
   poster on *any* web page to capture it; a side panel shows the catalog. The
@@ -14,20 +14,63 @@ date-organized catalog with duplicate detection. Two halves:
   (the service worker needs it to fetch image bytes from any CDN). Capture and
   generic scraping (image, caption, JSON-LD Event) work everywhere; the
   Facebook-specific enrichment stays gated to FB event pages (`onEventPage()`).
-- **`server/`** — a local Node HTTP server that stores images on disk, keeps a
-  JSON index, perceptually-hashes for duplicates, and OCRs posters for dates.
 
-They talk over `http://127.0.0.1:3777`. The extension falls back to
-`chrome.storage.local` when the server is offline.
+**Backend — on the `aws-shared-catalog` branch, the extension talks to a
+shared AWS backend, not a local server.** This replaced the one-catalog-per-
+machine design so several people (Windows and Mac) can use the same catalog.
+See "Shared AWS backend" below.
 
-## Running
+- **`aws/`** *(current default backend)* — a Lambda function (Function URL,
+  no API Gateway) backed by DynamoDB (index) + S3 (images). Pay-per-use, one
+  shared catalog, auth via a shared token. See `aws/README.md`.
+- **`server/`** + **`native-host/`** *(superseded, still functional
+  standalone)* — the original local Node HTTP server + Windows/macOS
+  auto-start tooling: one catalog per machine, no sharing. Useful for local
+  dev/offline testing but the extension no longer points at it by default —
+  see "Local server (superseded)" below.
+
+The extension falls back to `chrome.storage.local` when whichever backend
+it's pointed at is unreachable.
+
+## Shared AWS backend
+
+`aws/` — see `aws/README.md` for full detail (architecture, deploy, auth,
+migration, operating it). Short version:
+
+- Deploy with SAM: `cd aws && sam build && sam deploy ...` — creates a Lambda
+  (`src/index.mjs`, ported from `server/{store,hash,ocr}.js`), a Function URL,
+  `CapturesTable`/`DatesTable`/`VenuesTable` (DynamoDB, on-demand billing),
+  and a public-read `ImagesBucket` (S3). No fixed cost while idle.
+- `src/.npmrc` (`os=linux cpu=x64 libc=glibc`) makes `sam build` fetch the
+  Linux `sharp` binary even when built from Windows/macOS — Lambda always
+  runs on Amazon Linux. No Docker needed.
+- Auth is one shared secret (`X-Api-Token` header, checked in `index.mjs`),
+  not per-user identity — give the same token to everyone sharing the
+  catalog. `extension/background.js` and `extension/sidepanel/sidepanel.js`
+  each have an `API_URL` constant pointing at the Function URL; the panel
+  prompts once for the token (`chrome.storage.local`, this browser only) and
+  forgets it on a 401 so the next call re-prompts.
+- `migrate.mjs` pushes an existing `server/data/` catalog into this backend
+  via the AWS SDK directly (not the API) — run once after first deploy.
+- Images are public-read S3 objects; `GET /captures` returns each entry's URL
+  as `imageSrc`, which the panel's `imageSrc()` helper uses directly (no more
+  `/images/<path>` proxy route).
+
+## Local server (superseded — files still work standalone, extension no longer wired to them)
 
 ```sh
 cd server && npm start          # node server.js, listens on 127.0.0.1:3777
 ```
 
-Load the extension unpacked at `chrome://extensions` (Developer mode → Load
-unpacked → `extension/`). After editing extension files, reload it there (↻).
+This still runs and can be exercised with curl/Postman, but **the extension's
+own auto-start code for it is gone**: repointing `background.js`/
+`sidepanel.js` at `aws/` deleted `ensureServerRunning()`,
+`launchServerViaNativeHost()`, and the `SERVER_URL`/`NATIVE_HOST` constants
+entirely (see "Shared AWS backend" above). To use the local server with the
+extension again you'd need to re-add that wiring, or just set `API_URL` back
+to `http://127.0.0.1:3777` and enter any placeholder value when the panel
+prompts for an API token — `server.js` has no auth check, so it ignores
+whatever `X-Api-Token` header the panel now always sends.
 
 **The server does not hot-reload.** After changing anything in `server/`, kill
 the running process and restart it, or changes won't take effect. On Windows:
@@ -39,16 +82,16 @@ stale server.
 Two conveniences avoid the manual start: `event catalog server.cmd` (Windows)
 / `event catalog server.command` (macOS) — both at the repo root — are an
 idempotent, double-clickable launcher (no-op if `/health` already answers;
-good for `shell:startup` / Login Items). And `native-host/` registers a Chrome
-**native-messaging** host so the side panel auto-starts the server on load
-when it's down — the panel calls `ensureServerRunning()` (see `sidepanel.js`),
-which messages `com.cameronwills.event_catalog`; the host (`host.mjs`) spawns
-`node server.js` detached and exits, launched via `event_catalog_host.bat` on
-Windows or `event_catalog_host.sh` on macOS. Requires a one-time
-`native-host/install.cmd <extension-id>` (Windows) or `native-host/install.sh
-<extension-id>` (macOS) and the `nativeMessaging` manifest permission. Neither
-of these hot-reloads either — restarting after `server/` edits still means
-killing the process by hand.
+good for `shell:startup` / Login Items). `native-host/` registers a Chrome
+**native-messaging** host that a browser panel *could* message to auto-start
+`node server.js` on demand — `host.mjs` spawns it detached via
+`event_catalog_host.bat` (Windows) or `event_catalog_host.sh` (macOS), after a
+one-time `native-host/install.cmd <extension-id>` / `install.sh
+<extension-id>`. This was originally wired up from `sidepanel.js`
+(`ensureServerRunning()`), but that call site no longer exists now the panel
+talks to `aws/` by default — `native-host/` is kept for reference/manual use
+only. Neither launcher hot-reloads — restarting after `server/` edits still
+means killing the process by hand.
 
 **Cross-platform:** the extension and server code are plain, portable
 JS/Node — no platform-specific logic. Chrome loads the unpacked `extension/`
@@ -58,20 +101,17 @@ launcher/installer scripts above, which have macOS counterparts.
 platform-specific), so `npm install` must be run on each machine — the setup
 script below does this automatically on macOS.
 
-**Easiest macOS install (for a non-technical user):** `Setup Event
+**macOS launchd option (for running `server.js` standalone):** `Setup Event
 Catalog.command` (repo root) is a one-shot, double-click setup — checks for
 Node (opening the install page if it's missing), runs `npm install`, and
 registers a **launchd** LaunchAgent (`~/Library/LaunchAgents/
-com.cameronwills.event-catalog-server.plist`, `RunAtLoad`+`KeepAlive`) so the
-server is always running in the background, restarting itself at login/crash.
-This sidesteps `native-host/` entirely: `ensureServerRunning()` in
-`sidepanel.js` only calls the native-messaging host when `/health` doesn't
-already answer, so with launchd keeping the server up, the side panel never
-needs it and the native-messaging install step (which requires copying an
-extension ID into a Terminal command) can be skipped. Logs go to
-`server/data/server.log`. The remaining step — loading the unpacked extension
-in Chrome — can't be scripted (Chrome requires a human click through
-Developer mode → Load unpacked); see the setup guide for that walkthrough.
+com.cameronwills.event-catalog-server.plist`, `RunAtLoad`+`KeepAlive`) so
+`server.js` is always running in the background, restarting itself at
+login/crash. Logs go to `server/data/server.log`. This predates the `aws/`
+backend and was originally written so a non-technical macOS user's panel
+would always find the local server up without touching `native-host/` at
+all; it still works to keep `server.js` running for standalone/dev use, but
+isn't part of the default `aws/`-backed setup any more.
 
 This dev machine is Windows; the Bash tool here is Git Bash. `/tmp` resolves
 to `C:\tmp` for Node (which usually doesn't exist) — use the scratchpad dir
@@ -138,6 +178,11 @@ moves the file; title/venue/url/dtinfo/assignedTime/uploadState are metadata), `
 (distinct venue names for autocomplete), `POST /backfill-images`, `GET
 /images/<folder>/<file>`.
 
+`aws/src/index.mjs` mirrors this route set except `POST /backfill-images` and
+`GET /images/*` (images are public S3 objects instead — each capture's
+`imageSrc` field is the direct URL) — and every route but `/health` requires
+the `X-Api-Token` header.
+
 ## Extension notes
 
 - `background.js` (service worker) — context menu, capture flow, side-panel
@@ -174,8 +219,8 @@ moves the file; title/venue/url/dtinfo/assignedTime/uploadState are metadata), `
   duplicate warning) that
   also opens on capture, and delete. The Venue field autocompletes from a native
   `<datalist>` populated (each render) from `GET /venues` unioned with venues on
-  the loaded captures. Server is the source of truth; pending local captures
-  merge on top.
+  the loaded captures. The backend (`API_URL` — `aws/` by default, see above)
+  is the source of truth; pending local captures merge on top.
     - **Selective upload** — each thumb has a bottom-left square that cycles its
       `uploadState` white→black→green (initial→omit→uploaded), persisted via
       PATCH. An initial poster missing a title *or* venue shows **red** instead
@@ -225,5 +270,13 @@ scraping is expected to need occasional maintenance.
   shell arg limits — write the JSON body to a file and `curl --data-binary @`.
 - The UI can't be driven from here (no Chrome); verify panel changes via
   `node --check` plus the server endpoints they call.
+- `aws/`: `sam validate --lint` + `sam build` catch template/packaging issues
+  before a deploy. There's no local Lambda emulation used here — verify a
+  deployed change with `curl` against the Function URL (health check, then an
+  authenticated round trip) and `aws logs filter-log-events` (or `aws lambda
+  list-functions` first, since SAM appends a suffix to the function name) for
+  errors/timing. `.deployed-config.json` (gitignored) holds this stack's
+  table/bucket names for ad-hoc AWS CLI/SDK use — never put the `ApiToken` in
+  a tracked file.
 - Match the surrounding style: small focused functions, comments explaining
   *why* (especially the CORS/date-precedence/serialized-write decisions).

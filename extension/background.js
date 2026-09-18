@@ -8,9 +8,12 @@
 const CONTEXT_MENU_ID = "add-to-event-catalog";
 const STORAGE_KEY = "captures";
 
-// Local catalog server (step 2). Captures POST here; if it's unreachable we
-// fall back to chrome.storage.local so nothing is lost.
-const SERVER_URL = "http://127.0.0.1:3777";
+// Shared AWS backend (see aws/) — same URL and auth-token storage key as
+// sidepanel.js. Captures POST here; if it's unreachable (or the token isn't
+// saved yet — this service worker has no DOM to prompt for it, unlike the
+// panel) we fall back to chrome.storage.local so nothing is lost.
+const API_URL = "https://hcpgo2xvwv5xbii7lbg36mrdue0hzwyt.lambda-url.eu-west-2.on.aws";
+const API_TOKEN_KEY = "apiToken";
 
 // --- Setup ---------------------------------------------------------------
 
@@ -110,16 +113,18 @@ async function saveCapture(capture) {
   };
 
   try {
-    const res = await fetch(`${SERVER_URL}/captures`, {
+    const { [API_TOKEN_KEY]: token } = await chrome.storage.local.get(API_TOKEN_KEY);
+    const res = await fetch(`${API_URL}/captures`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(token ? { "x-api-token": token } : {}) },
       body: JSON.stringify(entry),
     });
     if (!res.ok) throw new Error(`server responded ${res.status}`);
     const saved = await res.json();
     notifyPanel({ type: "CAPTURE_ADDED", entry: saved });
   } catch (err) {
-    // Server offline: keep the capture locally so it isn't lost.
+    // Offline, or no API token saved yet (open the panel once to set it up):
+    // keep the capture locally so it isn't lost.
     console.warn("server save failed, storing locally", err);
     await storeLocally(entry);
     notifyPanel({ type: "CAPTURE_ADDED", entry, pending: true });

@@ -12,9 +12,10 @@ panel reads back from it. If the server is offline, captures fall back to
 `chrome.storage.local` and the panel keeps showing them until the server is
 back. Perceptual hashing and OCR come next (steps 3–4).
 
-> Start the server first: `cd server && npm start`. It listens on
-> `http://127.0.0.1:3777`, matching `SERVER_URL` in `background.js` /
-> `sidepanel/sidepanel.js`.
+> Captures go to a shared AWS backend (see `../aws/`), not a local server —
+> `API_URL` in `background.js` / `sidepanel/sidepanel.js`. The first request
+> the panel makes prompts once for the shared API token (ask whoever deployed
+> the stack); it's then kept in `chrome.storage.local` for this browser.
 
 ## Load it in Chrome
 

@@ -59,6 +59,10 @@ let focusedDate = null; // group targeted for paste
 let draggingActive = false;
 let entriesById = new Map(); // id -> entry, refreshed each render
 let editingId = null; // poster whose metadata is open in the editor
+// True while the open editor is for a capture that was just taken and hasn't
+// been saved yet — Cancel/Escape on this one discards the capture entirely
+// (see cancelEditor) rather than leaving an empty local entry behind.
+let editingIsNewCapture = false;
 let filterInvalid = false; // when on, show only locally-held (not-yet-on-Pawb) items
 let lastKnownVersion = null; // last-seen GET /events/version fingerprint
 let authPromptDeclined = false; // avoid re-prompting repeatedly after a Cancel this session
@@ -157,7 +161,11 @@ chrome.runtime.onMessage.addListener((message) => {
     openMonthFor(dateKey(message.entry));
     storeLocalCapture(message.entry)
       .then(() => render())
-      .then(() => openEditor(entriesById.get(message.entry.id) || message.entry));
+      .then(() =>
+        openEditor(entriesById.get(message.entry.id) || message.entry, {
+          isNewCapture: true,
+        })
+      );
   } else if (message.type === "CAPTURE_ERROR") {
     showStatus(`Capture failed: ${message.message}`);
   }
@@ -874,8 +882,9 @@ function splitStart(value) {
 
 // Edit mode: show the poster above, dock the form below; both close on
 // save/cancel.
-function openEditor(entry) {
+function openEditor(entry, { isNewCapture = false } = {}) {
   editingId = entry.id;
+  editingIsNewCapture = isNewCapture;
   editorTitle.value = displayTitle(entry);
   editorVenue.value = displayVenue(entry);
   // Start date+time in one field. Default an unknown date to today (rather than
@@ -928,6 +937,20 @@ function closeEditor() {
   lightboxEl.hidden = true;
   lightboxImg.removeAttribute("src");
   editingId = null;
+  editingIsNewCapture = false;
+}
+
+// Cancel/Escape: close the editor, and if it was showing a capture that was
+// just taken and never saved, discard it entirely rather than leaving an
+// empty (title/venue-less) local entry behind — it was never asked for.
+async function cancelEditor() {
+  const discardId = editingIsNewCapture ? editingId : null;
+  closeEditor();
+  if (!discardId) return;
+  await removeLocalEntry(discardId);
+  if (selectedId === discardId) selectedId = null;
+  if (clipboardId === discardId) clipboardId = null;
+  await render();
 }
 
 function setFocusedDate(key) {
@@ -1001,7 +1024,7 @@ function wireControls() {
     closeEditor();
     syncEntry(entry, fields);
   });
-  editorCancel.addEventListener("click", closeEditor);
+  editorCancel.addEventListener("click", cancelEditor);
   // Keep the end date from preceding the start as the start is edited.
   editorStart.addEventListener("change", () => {
     editorEndDate.min = splitStart(editorStart.value).date || "";
@@ -1023,7 +1046,7 @@ function wireControls() {
 function onKeydown(e) {
   // Escape closes the editor even while an input is focused.
   if (e.key === "Escape" && editingId) {
-    closeEditor();
+    cancelEditor();
     return;
   }
 

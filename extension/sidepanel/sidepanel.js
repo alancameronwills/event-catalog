@@ -746,9 +746,11 @@ function displayVenue(entry) {
   return entry.venue || entry.event?.venue || "";
 }
 function displayUrl(entry) {
-  // A user-set URL always wins; otherwise fall back to the captured page URL,
-  // but only when it points at a specific page (not the bare facebook.com root).
-  return entry.url || specificPageUrl(entry.pageUrl) || "";
+  // A user-set URL always wins; otherwise prefer a scraped Tickets link (see
+  // findTicketsUrl() in content.js — a more useful booking link than the FB
+  // event page itself); otherwise fall back to the captured page URL, but
+  // only when it points at a specific page (not the bare facebook.com root).
+  return entry.url || entry.event?.url || specificPageUrl(entry.pageUrl) || "";
 }
 
 // The captured page URL is only useful as a link if it names a specific page /

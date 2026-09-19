@@ -134,10 +134,12 @@ function cleanEventName(s) {
 // --- Event-page header DOM parsing --------------------------------------
 //
 // On logged-in SPA sessions FB event pages often carry *no* JSON-LD and no
-// event:* meta, so the date and venue live only as visible text. The header
-// reads, in DOM order: <date/time line> → <title> → <venue line>. So we anchor
-// on the title leaf and read its immediate neighbours. Fragile by nature (FB's
-// classes are obfuscated and change often) — hence purely best-effort.
+// event:* meta, so the date and venue live only as visible text. FB's classes
+// are obfuscated, but the structure (found by inspecting a live event page)
+// is stable enough to anchor on: the title sits in its own <div><h1>…</h1></div>;
+// the <div> immediately before that one holds the date/time line, and the
+// <div> immediately after it holds the venue. Fragile by nature — expected to
+// need occasional maintenance as FB's DOM shifts.
 
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 const MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec";
@@ -236,41 +238,125 @@ function parseHeaderDate(text, now, boxDay = null) {
   return time ? `${iso}T${time}:00` : iso;
 }
 
-// A leaf just below the title is the venue unless it's a FB UI label or itself
-// a date line.
+// A leaf near the title is the venue unless it's a FB UI label, an attendee
+// count, or itself a date line. Capped length: venues are short lines, not
+// paragraphs (an over-long match is more likely a description leaf).
 function isLikelyVenue(text) {
-  if (!text || text.length < 3) return false;
-  if (/^(interested|going|maybe|details|share|invite|save|guests?|see more|see all)$/i.test(text)) {
+  if (!text || text.length < 3 || text.length > 120) return false;
+  if (
+    /^(interested|going|maybe|details|share|invite|save|guests?|see more|see all|public|private event|event by|hosted by|message|contact|report|duplicate event|add to timeline)\b/i.test(
+      text
+    )
+  ) {
     return false;
   }
+  if (/^[\d,.\s]+\s*(people|guests?)\b/i.test(text)) return false;
   return !parseHeaderDate(text, new Date());
 }
 
-// Anchor on the header title leaf (its text === the event name) and read the
-// date line above it and venue line below. Prefers the occurrence whose line
-// above parses as a date, so we skip stray copies of the title elsewhere on the
-// page (sidebar, breadcrumbs).
-function scrapeEventHeaderFromDom(name, now) {
-  if (!name) return {};
-  const leaves = [...document.querySelectorAll("h1,h2,h3,span,div,a")].filter(
-    (e) => e.childElementCount === 0 && e.textContent.trim()
-  );
-  const matches = [];
-  leaves.forEach((e, i) => {
-    if (e.textContent.trim() === name) matches.push(i);
-  });
-  let idx = matches.find((i) => i > 0 && parseHeaderDate(leaves[i - 1].textContent, now));
-  if (idx === undefined) idx = matches[0];
-  if (idx === undefined) return {};
+// Leaves (elements with no element children) with non-empty text, inside a
+// given root, in DOM order.
+function textLeavesWithin(root) {
+  return [...root.querySelectorAll("*")]
+    .filter((e) => e.childElementCount === 0 && e.textContent.trim())
+    .map((e) => e.textContent.trim());
+}
 
-  const above = idx > 0 ? leaves[idx - 1].textContent.trim() : "";
-  const below = idx + 1 < leaves.length ? leaves[idx + 1].textContent.trim() : "";
-  // The calendar-box day number sits just above the (day-only) date line.
-  const boxDay = idx > 1 ? parseBoxDay(leaves[idx - 2].textContent) : null;
-  return {
-    startDate: parseHeaderDate(above, now, boxDay),
-    venue: isLikelyVenue(below) ? below : null,
-  };
+// Read one <h1> candidate's sibling <div>s: the one before holds the
+// date/time line, the one after holds the venue.
+function readHeaderCandidate(h1, now) {
+  const name = h1.textContent.trim();
+  const titleDiv = h1.closest("div");
+  if (!titleDiv) return { name, startDate: null, venue: null };
+
+  const dateDiv = titleDiv.previousElementSibling;
+  let startDate = null;
+  if (dateDiv) {
+    // Usually the whole block reads straight as a date/time line, but when
+    // FB renders a calendar-box day number alongside a day-only weekday line
+    // ("Saturday"), scan its leaves so the box day can pin the exact date.
+    startDate = parseHeaderDate(dateDiv.textContent.trim(), now);
+    if (!startDate) {
+      const leaves = textLeavesWithin(dateDiv);
+      for (let i = 0; i < leaves.length && !startDate; i++) {
+        const boxDay = i > 0 ? parseBoxDay(leaves[i - 1]) : null;
+        startDate = parseHeaderDate(leaves[i], now, boxDay);
+      }
+    }
+  }
+
+  const venueDiv = titleDiv.nextElementSibling;
+  const venueText = venueDiv ? venueDiv.textContent.trim() : "";
+  const venue = isLikelyVenue(venueText) ? venueText : null;
+
+  return { name, startDate, venue };
+}
+
+// FB renders several <h1>s per page — visually-hidden landmark headings for
+// unrelated widgets (e.g. a "Chats" heading for the Messenger sidebar, an
+// "Events" nav heading) alongside the real event title. Try each in document
+// order and keep the first whose neighbouring div actually parses as a date:
+// that's the one signal a generic landmark heading won't have, so it reliably
+// picks out the true event header. Falls back to the first <h1> (still useful
+// for its name) if none have a parseable date neighbour.
+function scrapeEventHeaderFromDom(now) {
+  const h1s = [...document.querySelectorAll("h1")];
+  const candidates = h1s.map((h1) => readHeaderCandidate(h1, now));
+  let fallback = null;
+  for (const candidate of candidates) {
+    if (candidate.startDate) return candidate;
+    if (!fallback) fallback = candidate;
+  }
+  return fallback || {};
+}
+
+// --- Tickets link ---------------------------------------------------------
+
+// The next element (in DOM order) after `start` matching `predicate`.
+function nextElementMatching(start, predicate) {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  walker.currentNode = start;
+  let node;
+  while ((node = walker.nextNode())) {
+    if (predicate(node)) return node;
+  }
+  return null;
+}
+
+// FB event pages often show a "Tickets" section linking out to the actual
+// ticketing site (Eventbrite, DICE, the venue's own site, …) — a more useful
+// booking link than the bare facebook.com event URL. Structure (per a live
+// page): a <span> containing exactly "Tickets", then the next <div> in
+// document order holds the link. FB renders more than one such span (e.g. a
+// header quick-action pill as well as a dedicated Tickets section), so try
+// each in turn and keep the first that actually yields a link.
+function findTicketsUrl() {
+  const labels = [...document.querySelectorAll("span")].filter(
+    (s) => s.textContent.trim().toLowerCase() === "tickets"
+  );
+  for (const label of labels) {
+    const container = nextElementMatching(label, (e) => e.tagName === "DIV");
+    const link = container?.querySelector("a[href]");
+    if (link) return resolveFacebookRedirect(link.href);
+  }
+  return null;
+}
+
+// FB routes outbound links through a redirector, e.g.
+// "https://l.facebook.com/l.php?u=<encoded target>&h=…" — unwrap to the real
+// destination. Anything else (e.g. an FB-hosted checkout link) is returned
+// as-is.
+function resolveFacebookRedirect(href) {
+  try {
+    const u = new URL(href, location.href);
+    if (/(^|\.)facebook\.com$/i.test(u.hostname) && u.pathname === "/l.php") {
+      const target = u.searchParams.get("u");
+      if (target) return target;
+    }
+    return u.href;
+  } catch {
+    return href || null;
+  }
 }
 
 // Pull an Event object out of JSON-LD, if present. This is the only source that
@@ -297,15 +383,20 @@ function scrapeEventJsonLd() {
   return null;
 }
 
-// Structured event details, merged from most- to least-reliable sources:
-// JSON-LD (clean, has venue, but often missing) → og:/event: meta tags in the
-// server-rendered head (survive when JSON-LD is gone) → the document title
-// (name of last resort). Venue only comes from JSON-LD; DOM scraping it is too
-// fragile to trust. The meta/title fallbacks are gated to event pages: off one,
-// og:title/document.title are just "Facebook" or a person's name, not an event.
+// Structured event details, merged from most- to least-reliable sources. On
+// an event page the visible header DOM (see scrapeEventHeaderFromDom) goes
+// *first*: it's the only source guaranteed to reflect what's actually on
+// screen right now. JSON-LD and the <head> og:/event: meta tags are
+// server-rendered at the initial page load and only refreshed on a full
+// reload — after Facebook's in-app SPA navigation to an event they can lag
+// behind, so they're kept only as fallbacks for whatever the DOM didn't
+// supply. The meta/title/DOM fallbacks are gated to event pages: off one,
+// og:title/document.title are just "Facebook" or a person's name, not an
+// event.
 function scrapeEventDetails() {
   const jsonLd = scrapeEventJsonLd();
   const onEvent = onEventPage();
+  const dom = onEvent ? scrapeEventHeaderFromDom(new Date()) : {};
   const meta = onEvent
     ? {
         name: cleanEventName(metaContent("og:title")) || cleanEventName(document.title),
@@ -314,26 +405,17 @@ function scrapeEventDetails() {
       }
     : {};
 
-  const name = jsonLd?.name || meta.name || null;
-
-  // Last resort for date/venue: read the visible event-page header. Only bother
-  // when we have a name to anchor on and a structured source didn't already
-  // supply the value.
-  const needsDate = !(jsonLd?.startDate || meta.startDate);
-  const needsVenue = !jsonLd?.venue;
-  const dom =
-    onEvent && name && (needsDate || needsVenue)
-      ? scrapeEventHeaderFromDom(name, new Date())
-      : {};
+  const name = dom.name || jsonLd?.name || meta.name || null;
 
   const details = {
     name,
-    startDate: jsonLd?.startDate || meta.startDate || dom.startDate || null,
+    startDate: dom.startDate || jsonLd?.startDate || meta.startDate || null,
     endDate: jsonLd?.endDate || meta.endDate || null,
-    venue: jsonLd?.venue || dom.venue || null,
+    venue: dom.venue || jsonLd?.venue || null,
+    url: onEvent ? findTicketsUrl() : null,
   };
   // Nothing worth reporting? Say so, so the entry stays purely image-derived.
-  if (!details.name && !details.startDate && !details.venue) return null;
+  if (!details.name && !details.startDate && !details.venue && !details.url) return null;
   return details;
 }
 })();

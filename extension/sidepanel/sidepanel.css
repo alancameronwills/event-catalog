@@ -332,8 +332,9 @@ body {
   background: var(--accent);
 }
 
-/* Upload-state toggle, bottom-left. Always visible (it conveys state):
-   white = initial (to upload), black = omit, green = uploaded. */
+/* "Not yet on Pawb" indicator, bottom-left. Only shown for entries that
+   aren't synced yet: red = incomplete (missing title/venue), grey = valid
+   but not synced (click to retry). */
 .thumb-state {
   position: absolute;
   left: 3px;
@@ -343,22 +344,17 @@ body {
   padding: 0;
   border: 1px solid rgba(0, 0, 0, 0.55);
   border-radius: 3px;
-  background: #fff;
   cursor: pointer;
 }
 
-/* Initial but not yet uploadable (missing title or venue). */
-.thumb-state[data-state="initial"][data-incomplete="true"] {
+.thumb-state[data-state="incomplete"] {
   background: #e74c3c;
   border-color: #a82315;
 }
 
-.thumb-state[data-state="omit"] {
-  background: #000;
-}
-
-.thumb-state[data-state="uploaded"] {
-  background: #2ecc40;
+.thumb-state[data-state="pending"] {
+  background: #999;
+  border-color: #666;
 }
 
 .thumb .dup-badge {
@@ -456,6 +452,21 @@ body {
 }
 
 .dup-warning[hidden] {
+  display: none;
+}
+
+.recurring-note {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid #cfe2ff;
+  border-radius: 6px;
+  background: #eaf3ff;
+  color: #0a4da0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.recurring-note[hidden] {
   display: none;
 }
 

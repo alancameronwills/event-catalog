@@ -12,16 +12,13 @@
         <h1>Event Catalog</h1>
         <div class="header-right">
           <span id="count" class="count" aria-live="polite"></span>
-          <!-- Icon-only controls: expand all months, filter to un-handled
-               events, and upload those events to the external site. -->
+          <!-- Icon-only controls: expand all months, and filter to items not
+               yet on Pawb (incomplete or still waiting to sync). -->
           <button id="expand-btn" class="btn btn-icon" type="button" title="Expand all months" aria-label="Expand all months">
             <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4"/></svg>
           </button>
-          <button id="filter-btn" class="btn btn-icon" type="button" title="Show only events still to upload" aria-label="Show only events still to upload" aria-pressed="false">
+          <button id="filter-btn" class="btn btn-icon" type="button" title="Show only items not yet on Pawb" aria-label="Show only items not yet on Pawb" aria-pressed="false">
             <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12l-4.6 5.5V13L7 11V8.5L2 3z"/></svg>
-          </button>
-          <button id="upload-btn" class="btn btn-icon" type="button" title="Upload events to gigiau.uk" aria-label="Upload events to gigiau.uk">
-            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11V3M5 6l3-3 3 3M3 13h10"/></svg>
           </button>
         </div>
       </header>
@@ -44,9 +41,9 @@
         <strong>&ldquo;Add to event catalog&rdquo;</strong>.
       </p>
       <p id="emptyFiltered" class="empty">
-        No events ready to upload. Right-click an event poster and choose
+        Nothing waiting to sync. Right-click an event poster and choose
         <strong>&ldquo;Add to event catalog&rdquo;</strong>
-        or <a href="#" id="turnOffFilter">turn off the filter</a> to see uploaded events.
+        or <a href="#" id="turnOffFilter">turn off the filter</a> to see everything on Pawb.
       </p>
     </main>
 
@@ -58,6 +55,9 @@
       </div>
       <form id="editor-form" class="editor-card" hidden>
         <p id="editor-dup-warning" class="dup-warning" hidden></p>
+        <p id="editor-recurring-note" class="recurring-note" hidden>
+          Recurring event — edit dates in WordPress.
+        </p>
         <div class="editor-fields">
           <label>Title <input type="text" id="editor-title" autocomplete="off" /></label>
           <label>Venue
@@ -78,6 +78,6 @@
       </form>
     </div>
 
-    <script src="sidepanel.js"></script>
+    <script type="module" src="sidepanel.js"></script>
   </body>
 </html>

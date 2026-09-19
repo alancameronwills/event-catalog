@@ -1,8 +1,0 @@
-# SAM build artifacts and deploy-time config — rebuilt/regenerated per machine.
-.aws-sam/
-node_modules/
-samconfig.toml
-
-# Local-only: the deployed API token and stack outputs (see README.md). Never
-# commit the shared secret.
-.deployed-config.json

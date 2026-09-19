@@ -1,19 +1,14 @@
 // Service worker: registers the context menu, handles capture requests,
 // and manages the side panel.
 //
-// Step 1 scaffold: captures are stored in chrome.storage.local so the side
-// panel is functional standalone. Step 2 will forward captures to the local
-// Node server instead (see saveCapture()).
+// This no longer talks to any backend directly. It just scrapes the page
+// (via content.js) and fetches the image bytes (content scripts are
+// CORS-blocked from CDNs like fbcdn; the service worker isn't, thanks to
+// host_permissions), then hands the result to the side panel. The panel
+// decides whether the capture is complete enough to post straight to Pawb
+// or needs to be held locally (chrome.storage.local) until edited.
 
 const CONTEXT_MENU_ID = "add-to-event-catalog";
-const STORAGE_KEY = "captures";
-
-// Shared AWS backend (see aws/) — same URL and auth-token storage key as
-// sidepanel.js. Captures POST here; if it's unreachable (or the token isn't
-// saved yet — this service worker has no DOM to prompt for it, unlike the
-// panel) we fall back to chrome.storage.local so nothing is lost.
-const API_URL = "https://hcpgo2xvwv5xbii7lbg36mrdue0hzwyt.lambda-url.eu-west-2.on.aws";
-const API_TOKEN_KEY = "apiToken";
 
 // --- Setup ---------------------------------------------------------------
 
@@ -55,8 +50,9 @@ function openPanel(windowId) {
 
 // --- Capture flow --------------------------------------------------------
 
-// Ask the content script (running in the Facebook page) to gather the
-// full-resolution image and nearby metadata, then persist the result.
+// Ask the content script (running in the page) to gather the full-resolution
+// image and nearby metadata, fetch the image bytes, and hand the result to
+// the side panel. The panel owns all persistence decisions from here.
 async function captureImage(tabId, hint) {
   try {
     const capture = await requestCapture(tabId, hint);
@@ -65,8 +61,8 @@ async function captureImage(tabId, hint) {
     // Fetch the image bytes here in the service worker. Content scripts run in
     // the page's origin and are CORS-blocked from image CDNs (e.g. fbcdn); the
     // service worker can fetch hosts listed in host_permissions without CORS.
-    // Without the bytes there's no perceptual hash and therefore no duplicate
-    // detection.
+    // The panel needs these bytes both to hash the image (duplicate detection)
+    // and to upload it to Pawb.
     if (!capture.imageDataUrl && capture.imageUrl) {
       try {
         capture.imageDataUrl = await fetchImageDataUrl(capture.imageUrl);
@@ -75,7 +71,12 @@ async function captureImage(tabId, hint) {
       }
     }
 
-    await saveCapture(capture);
+    const entry = {
+      id: crypto.randomUUID(),
+      capturedAt: new Date().toISOString(),
+      ...capture,
+    };
+    notifyPanel({ type: "CAPTURE_ADDED", entry });
   } catch (err) {
     console.error("capture failed", err);
     const message = /Receiving end does not exist|Could not establish connection/i.test(
@@ -103,44 +104,6 @@ async function requestCapture(tabId, hint) {
     });
     return await chrome.tabs.sendMessage(tabId, message);
   }
-}
-
-async function saveCapture(capture) {
-  const entry = {
-    id: crypto.randomUUID(),
-    capturedAt: new Date().toISOString(),
-    ...capture,
-  };
-
-  try {
-    const { [API_TOKEN_KEY]: token } = await chrome.storage.local.get(API_TOKEN_KEY);
-    const res = await fetch(`${API_URL}/captures`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(token ? { "x-api-token": token } : {}) },
-      body: JSON.stringify(entry),
-    });
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-    const saved = await res.json();
-    notifyPanel({ type: "CAPTURE_ADDED", entry: saved });
-  } catch (err) {
-    // Offline, or no API token saved yet (open the panel once to set it up):
-    // keep the capture locally so it isn't lost.
-    console.warn("server save failed, storing locally", err);
-    await storeLocally(entry);
-    notifyPanel({ type: "CAPTURE_ADDED", entry, pending: true });
-    notifyPanel({
-      type: "SERVER_OFFLINE",
-      message: "Catalog server offline — saved locally.",
-    });
-  }
-}
-
-async function storeLocally(entry) {
-  const { [STORAGE_KEY]: existing = [] } = await chrome.storage.local.get(
-    STORAGE_KEY
-  );
-  existing.unshift({ ...entry, pending: true });
-  await chrome.storage.local.set({ [STORAGE_KEY]: existing });
 }
 
 // Fetch an image and encode it as a data URL. Runs in the service worker,

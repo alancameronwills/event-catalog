@@ -1,33 +1,31 @@
-// Side panel: renders the catalog grouped by date.
+// Side panel: an editor for Pawb (gigiau.uk/pawb) content, grouped by date.
 //
-// Items are grouped by a stable YYYY-MM-DD key. Users can create empty dates
-// and move items between dates by dragging, or by copy/paste (select an item,
-// Ctrl/Cmd+C, focus a date group, Ctrl/Cmd+V). Moving reassigns the item's
-// date on the server (which also relocates the image file on disk).
+// Pawb is the catalog. A capture with enough info (title + venue) is posted
+// straight to Pawb on save; anything missing is held in chrome.storage.local
+// until it's completed, then synced automatically. Editing/deleting a
+// Pawb-backed poster writes straight through to Pawb too.
+//
+// Users can create empty dates and move items between dates by dragging, or
+// by copy/paste (select an item, Ctrl/Cmd+C, focus a date group, Ctrl/Cmd+V).
 
-const STORAGE_KEY = "captures";
-const CREATED_DATES_KEY = "createdDates";
+import { computeDHash, hammingDistance, DUP_THRESHOLD } from "../dhash.js";
 
-// Shared AWS backend (a Lambda Function URL — see aws/): everyone's install
-// talks to the same catalog, so there's no local server to start and the old
-// native-messaging auto-start is gone. Pay-per-use and always reachable.
-const API_URL = "https://hcpgo2xvwv5xbii7lbg36mrdue0hzwyt.lambda-url.eu-west-2.on.aws";
-const API_TOKEN_KEY = "apiToken";
+const STORAGE_KEY = "captures"; // locally-held entries not yet valid enough for Pawb
+const CREATED_DATES_KEY = "createdDates"; // local-only empty date placeholders
+const IMAGE_HASH_CACHE_KEY = "imageHashCache"; // pictureUrl -> dHash, across renders
 
-// External site to publish selected events to: a WordPress install running the
-// gigiau-events-posters plugin (see its README for the REST API).
-const UPLOAD_URL = "https://gigiau.uk/pawb/wp-json/gigiau/v1/events";
+const PAWB_BASE = "https://gigiau.uk/pawb/wp-json/gigiau/v1";
+
 // The username and (secret) application password are NOT kept in source. Both
 // are stored in chrome.storage.local (this browser profile only) and prompted
-// for on first upload — see getUploadAuth(). The username is only a default the
-// prompt pre-fills, since it may change.
-const UPLOAD_USER_DEFAULT = "alan";
-const UPLOAD_USER_KEY = "uploadUser";
-const UPLOAD_PASSWORD_KEY = "uploadPassword";
+// for on first use — see getPawbAuth(). The username is only a default the
+// prompt pre-fills, since it may change. Storage keys are unchanged from the
+// old upload-only flow so any already-saved credentials keep working.
+const PAWB_USER_DEFAULT = "alan";
+const PAWB_USER_KEY = "uploadUser";
+const PAWB_PASSWORD_KEY = "uploadPassword";
 
-// Upload state cycles white (initial) -> black (omit) -> green (uploaded) and
-// back. Only "omit"/"uploaded" are persisted; everything else is "initial".
-const UPLOAD_CYCLE = { initial: "omit", omit: "uploaded", uploaded: "initial" };
+const POLL_INTERVAL_MS = 60000; // other people may have this open too
 
 const catalogEl = document.getElementById("catalog");
 const emptyEl = document.getElementById("empty");
@@ -38,13 +36,13 @@ const hintEl = document.getElementById("hint");
 const expandBtn = document.getElementById("expand-btn");
 const filterBtn = document.getElementById("filter-btn");
 const turnOffFilterBtn = document.getElementById("turnOffFilter");
-const uploadBtn = document.getElementById("upload-btn");
 const addDateForm = document.getElementById("add-date-form");
 const addDateInput = document.getElementById("add-date-input");
 const lightboxEl = document.getElementById("lightbox");
 const lightboxImg = document.getElementById("lightbox-img");
 const editorForm = document.getElementById("editor-form");
 const editorDupWarning = document.getElementById("editor-dup-warning");
+const editorRecurringNote = document.getElementById("editor-recurring-note");
 const editorTitle = document.getElementById("editor-title");
 const editorVenue = document.getElementById("editor-venue");
 const editorStart = document.getElementById("editor-start");
@@ -61,65 +59,107 @@ let focusedDate = null; // group targeted for paste
 let draggingActive = false;
 let entriesById = new Map(); // id -> entry, refreshed each render
 let editingId = null; // poster whose metadata is open in the editor
-let filterInitial = false; // when on, show only events still to upload
+let filterInvalid = false; // when on, show only locally-held (not-yet-on-Pawb) items
+let lastKnownVersion = null; // last-seen GET /events/version fingerprint
+let authPromptDeclined = false; // avoid re-prompting repeatedly after a Cancel this session
 const monthState = new Map(); // "YYYY-MM"|"unknown" -> open? (persists re-renders)
 
 document.addEventListener("DOMContentLoaded", async () => {
-  // Opening the catalog is the moment to clear out events that have already
-  // passed (see pruneOutdated); then draw what's left. The first fetch this
-  // triggers prompts for the API token if it isn't saved yet (see apiFetch).
   await pruneOutdated();
-  render();
+  await render();
   wireControls();
+  startPolling();
 });
 
-// --- Talking to the shared backend ---------------------------------------
+// --- Talking to Pawb -------------------------------------------------------
 
-// The shared secret every install must send as X-Api-Token (see aws/). Kept
-// in chrome.storage.local (this browser profile only) and prompted for once —
-// same pattern as the gigiau upload credentials below.
-async function getApiToken() {
-  let { [API_TOKEN_KEY]: token } = await chrome.storage.local.get(API_TOKEN_KEY);
-  if (!token) {
-    const entered = window.prompt(
-      "Event Catalog API token:\nAsk whoever set up the shared catalog for this. Saved in this browser only, not in the extension's code."
+// Build the Basic-auth header, prompting for (and locally saving) the
+// username and app password the first time. Returns null if the user
+// cancels (and won't re-prompt again this session unless the credentials are
+// later forgotten, e.g. after a 401). WordPress strips non-alphanumerics on
+// auth, so the display spaces in the password are dropped.
+async function getPawbAuth() {
+  let { [PAWB_USER_KEY]: user, [PAWB_PASSWORD_KEY]: password } =
+    await chrome.storage.local.get([PAWB_USER_KEY, PAWB_PASSWORD_KEY]);
+  if ((!user || !password) && authPromptDeclined) return null;
+  if (!user || !password) {
+    const enteredUser = window.prompt(
+      "gigiau.uk username:\nSaved in this browser only, not in the extension's code.",
+      user || PAWB_USER_DEFAULT
     );
-    if (!entered) return null;
-    token = entered.trim();
-    await chrome.storage.local.set({ [API_TOKEN_KEY]: token });
+    if (!enteredUser || !enteredUser.trim()) {
+      authPromptDeclined = true;
+      return null;
+    }
+    user = enteredUser.trim();
+    const enteredPass = window.prompt(
+      `WordPress Application Password for "${user}":\n` +
+        `NOT your normal WordPress login password — this is a separate, revocable ` +
+        `code you create under your WordPress profile → Application Passwords. ` +
+        `Saved in this browser only, not in the extension's code.`
+    );
+    if (!enteredPass || !enteredPass.trim()) {
+      authPromptDeclined = true;
+      return null;
+    }
+    password = enteredPass.trim();
+    await chrome.storage.local.set({
+      [PAWB_USER_KEY]: user,
+      [PAWB_PASSWORD_KEY]: password,
+    });
   }
-  return token;
+  return "Basic " + btoa(`${user}:${password.replace(/\s+/g, "")}`);
 }
 
-// Drop a saved (e.g. wrong) token so the next call prompts again.
-async function forgetApiToken() {
-  await chrome.storage.local.remove(API_TOKEN_KEY);
+// Drop the saved (e.g. wrong) credentials so the next call re-prompts.
+async function forgetPawbAuth() {
+  await chrome.storage.local.remove([PAWB_USER_KEY, PAWB_PASSWORD_KEY]);
+  authPromptDeclined = false;
 }
 
-// fetch() against the shared backend with the auth header attached. A 401
-// means a missing/wrong token, so forget it and let the next call re-prompt.
-async function apiFetch(path, options = {}) {
-  const token = await getApiToken();
+// fetch() against Pawb's REST API with the auth header attached. A 401/403
+// means missing/wrong credentials, so forget them and let the next call
+// re-prompt.
+async function pawbFetch(path, options = {}) {
+  const auth = await getPawbAuth();
   const headers = { ...(options.headers || {}) };
-  if (token) headers["x-api-token"] = token;
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  if (res.status === 401) await forgetApiToken();
+  if (auth) headers["Authorization"] = auth;
+  const res = await fetch(`${PAWB_BASE}${path}`, { ...options, headers });
+  if (res.status === 401 || res.status === 403) await forgetPawbAuth();
   return res;
+}
+
+// Cheap poll target: only trigger a full refresh when the fingerprint changes
+// (see gigio_rest_events_version in the plugin).
+async function fetchVersion() {
+  try {
+    const res = await pawbFetch("/events/version");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data.version === "string" ? data.version : null;
+  } catch {
+    return null;
+  }
+}
+
+function startPolling() {
+  setInterval(async () => {
+    const v = await fetchVersion();
+    if (v && v !== lastKnownVersion) await render();
+  }, POLL_INTERVAL_MS);
 }
 
 // Re-render when a capture is added, and surface status messages.
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "CAPTURE_ADDED") {
-    // Open the editor immediately on a fresh capture so details can be added
-    // while the poster is in view. Make sure its month is expanded first.
-    if (message.entry) openMonthFor(dateKey(message.entry));
-    render().then(() => {
-      if (message.entry) openEditor(message.entry);
-    });
+    if (!message.entry) return;
+    // Held locally until the user completes and saves it (see syncEntry).
+    openMonthFor(dateKey(message.entry));
+    storeLocalCapture(message.entry)
+      .then(() => render())
+      .then(() => openEditor(entriesById.get(message.entry.id) || message.entry));
   } else if (message.type === "CAPTURE_ERROR") {
     showStatus(`Capture failed: ${message.message}`);
-  } else if (message.type === "SERVER_OFFLINE") {
-    showStatus(message.message);
   }
 });
 
@@ -129,19 +169,33 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-// --- Data loading --------------------------------------------------------
+// --- Data loading ----------------------------------------------------------
 
-// The server is the source of truth; fall back to local storage when offline.
+// Pawb is the source of truth for everything valid; chrome.storage.local
+// holds only entries not yet complete enough to post there.
 async function loadCaptures() {
   const { [STORAGE_KEY]: local = [] } = await chrome.storage.local.get(STORAGE_KEY);
   try {
-    const res = await apiFetch("/captures");
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
+    const res = await pawbFetch("/events");
+    if (!res.ok) throw new Error(`Pawb responded ${res.status}`);
     const remote = await res.json();
-    const remoteIds = new Set(remote.map((e) => e.id));
-    const pending = local.filter((e) => e.pending && !remoteIds.has(e.id));
-    return [...pending, ...remote];
-  } catch {
+    // The admin (rich) shape always has a `venue` key; a bad/missing
+    // credential silently degrades to the minimal public shape instead of
+    // erroring. Treat that as an auth problem rather than rendering a
+    // half-broken catalog.
+    if (remote.length && !("venue" in remote[0])) {
+      console.warn(
+        "loadCaptures: GET /events returned the minimal (unauthenticated) shape " +
+          "even though credentials are saved — treating as an auth failure.",
+        remote[0]
+      );
+      await forgetPawbAuth();
+      showStatus("Pawb sign-in needed — try an edit/delete to re-enter your app password.");
+      return local;
+    }
+    return [...local, ...remote.map(fromPawbEvent)];
+  } catch (err) {
+    console.warn("loadCaptures: GET /events failed, showing local only", err);
     return local;
   }
 }
@@ -150,39 +204,129 @@ async function loadCreatedDates() {
   const { [CREATED_DATES_KEY]: local = [] } = await chrome.storage.local.get(
     CREATED_DATES_KEY
   );
+  return local;
+}
+
+// Map one admin-shaped Pawb event (see gigio_admin_event_shape in the plugin)
+// into the panel's internal entry fields.
+function fromPawbEvent(gig) {
+  const [datePart, timePart] = splitDtstart(gig.dtstart);
+  const endDatePart = isDateString(gig.dtend) ? gig.dtend : null;
+  return {
+    id: String(gig.id),
+    wpId: gig.id,
+    title: gig.title || "",
+    venue: gig.venue || "",
+    dtinfo: gig.dtinfo || "",
+    url: gig.bookinglink || "",
+    assignedDate: datePart,
+    assignedTime: timePart,
+    // Only a real multi-day span counts as an end date; Pawb always stores
+    // dtend even for single-day events (defaulted equal to dtstart).
+    assignedEndDate: endDatePart && datePart && endDatePart > datePart ? endDatePart : null,
+    imageSrc: gig.picture || "",
+    recurring: !!gig.recurring,
+    pawbLink: gig.link || "",
+  };
+}
+
+// gig.dtstart is "YYYY-MM-DD", "YYYY-MM-DD HH:MM", or "YYYY-MM-DDTHH:MM".
+function splitDtstart(value) {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/.exec(value || "");
+  if (m) return [m[1], `${m[2]}:${m[3]}`];
+  const dateOnly = /^(\d{4}-\d{2}-\d{2})/.exec(value || "");
+  return [dateOnly ? dateOnly[1] : null, null];
+}
+
+// --- Duplicate detection (client-side) --------------------------------------
+
+// Hash every loaded entry's image, caching Pawb-hosted ones (by picture URL)
+// across renders so an unchanged catalog isn't re-fetched/re-hashed every
+// time. Local (not-yet-synced) entries are cheap to re-hash (no network —
+// their bytes are already a data URL) so they're never cached.
+async function ensureHashes(captures) {
+  const { [IMAGE_HASH_CACHE_KEY]: cache = {} } = await chrome.storage.local.get(
+    IMAGE_HASH_CACHE_KEY
+  );
+  let dirty = false;
+
+  const hashes = await Promise.all(
+    captures.map(async (entry) => {
+      const src = imageSrc(entry);
+      if (!src) return null;
+      if (entry.imageSrc && cache[entry.imageSrc]) return cache[entry.imageSrc];
+      const hash = await hashForSrc(src);
+      if (hash && entry.imageSrc) {
+        cache[entry.imageSrc] = hash;
+        dirty = true;
+      }
+      return hash;
+    })
+  );
+
+  const liveSrcs = new Set(captures.map((e) => e.imageSrc).filter(Boolean));
+  for (const key of Object.keys(cache)) {
+    if (!liveSrcs.has(key)) {
+      delete cache[key];
+      dirty = true;
+    }
+  }
+  if (dirty) await chrome.storage.local.set({ [IMAGE_HASH_CACHE_KEY]: cache });
+
+  return hashes;
+}
+
+async function hashForSrc(src) {
   try {
-    const res = await apiFetch("/dates");
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-    const remote = await res.json();
-    return [...new Set([...remote, ...local])];
-  } catch {
-    return local;
+    const res = await fetch(src);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await computeDHash(blob);
+  } catch (err) {
+    console.warn("hash failed for", src, err);
+    return null;
   }
 }
 
-// Persisted venue names for the editor's autocomplete. Offline we fall back to
-// whatever the loaded captures show (see populateVenueSuggestions).
-async function loadVenues() {
-  try {
-    const res = await apiFetch("/venues");
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-    return await res.json();
-  } catch {
-    return [];
+// Flag every entry whose image is within DUP_THRESHOLD of another currently-
+// loaded entry's image. Mutual (both sides of a pair get flagged) — simpler
+// than picking a "newer" side, and the existing UI (badge, warning,
+// skip-confirm-on-delete) works the same either way.
+function annotateDuplicates(captures, hashes) {
+  for (const entry of captures) {
+    entry.duplicateOf = null;
+    entry.duplicateDistance = null;
+  }
+  for (let i = 0; i < captures.length; i++) {
+    if (!hashes[i]) continue;
+    let best = null;
+    for (let j = 0; j < captures.length; j++) {
+      if (j === i || !hashes[j]) continue;
+      const d = hammingDistance(hashes[i], hashes[j]);
+      if (d <= DUP_THRESHOLD && (!best || d < best.d)) best = { j, d };
+    }
+    if (best) {
+      captures[i].duplicateOf = captures[best.j].id;
+      captures[i].duplicateDistance = best.d;
+    }
   }
 }
 
-// --- Rendering -----------------------------------------------------------
+// --- Rendering ---------------------------------------------------------------
 
 async function render() {
-  const [captures, createdDates, venues] = await Promise.all([
+  const [captures, createdDates, version] = await Promise.all([
     loadCaptures(),
     loadCreatedDates(),
-    loadVenues(),
+    fetchVersion(),
   ]);
+  if (version) lastKnownVersion = version;
+
+  const hashes = await ensureHashes(captures);
+  annotateDuplicates(captures, hashes);
 
   entriesById = new Map(captures.map((e) => [e.id, e]));
-  populateVenueSuggestions(captures, venues);
+  populateVenueSuggestions(captures);
 
   countEl.textContent = captures.length
     ? `${captures.length} ${captures.length === 1 ? "capture" : "captures"}`
@@ -194,11 +338,9 @@ async function render() {
     el.remove();
   }
 
-  // When the filter is on, show only events still in the initial state (the
-  // ones the Upload button would send).
-  const visible = filterInitial
-    ? captures.filter((e) => uploadStateOf(e) === "initial")
-    : captures;
+  // When the filter is on, show only entries not yet on Pawb (incomplete or
+  // still waiting to sync).
+  const visible = filterInvalid ? captures.filter((e) => !e.wpId) : captures;
 
   // Group items by stable date key, then ensure created (possibly empty) dates
   // each have a group.
@@ -210,18 +352,18 @@ async function render() {
   }
   // Empty created dates only clutter the filtered view, so skip them there.
   const createdSet = new Set(createdDates);
-  if (!filterInitial) {
+  if (!filterInvalid) {
     for (const date of createdDates) {
       if (!groups.has(date)) groups.set(date, []);
     }
   }
 
   if (groups.size === 0) {
-    if (filterInitial) 
+    if (filterInvalid)
       emptyFiltered.hidden = false;
-    else 
+    else
       emptyEl.hidden = false;
-    
+
     return;
   }
   emptyEl.hidden = true;
@@ -248,7 +390,7 @@ async function render() {
   }
 }
 
-// --- Month grouping ------------------------------------------------------
+// --- Month grouping ----------------------------------------------------------
 
 function monthKeyOf(key) {
   return key === "unknown" ? "unknown" : key.slice(0, 7);
@@ -319,7 +461,8 @@ function renderMonth(mKey, dateKeys, groups, createdSet) {
 
 // Stable YYYY-MM-DD key. Precedence: explicit assignment > structured event
 // date > OCR-extracted date > capture date; unparseable dates fall into
-// "unknown". Mirrors effectiveDate() on the server.
+// "unknown". For Pawb-backed entries, assignedDate is always Pawb's own
+// dtstart, so this resolves on the first check.
 function dateKey(entry) {
   if (isDateString(entry.assignedDate)) return entry.assignedDate;
   const structured = new Date(entry.event?.startDate);
@@ -418,7 +561,7 @@ function renderThumb(entry) {
   img.loading = "lazy";
   img.draggable = false; // let the figure own the drag
   img.src = imageSrc(entry);
-  img.alt = entry.event?.name || "Event poster";
+  img.alt = displayTitle(entry) || "Event poster";
   fig.appendChild(img);
 
   const edit = document.createElement("button");
@@ -459,24 +602,25 @@ function renderThumb(entry) {
     fig.appendChild(badge);
   }
 
-  // Upload-state toggle (bottom-left): white=initial, black=omit, green=uploaded.
-  // An initial poster missing a title or venue can't be uploaded — flag it red.
-  const state = document.createElement("button");
-  state.className = "thumb-state";
-  state.type = "button";
-  const st = uploadStateOf(entry);
-  state.dataset.state = st;
-  if (st === "initial" && !isUploadable(entry)) {
-    state.dataset.incomplete = "true";
-    state.title = "Set title and venue";
-  } else {
-    state.title = `Upload: ${st} — click to change`;
+  // "Not yet on Pawb" indicator, bottom-left: red = missing title/venue
+  // (can't sync yet), grey = valid but not synced (e.g. a create attempt
+  // failed offline — click to retry). Nothing shown once it's on Pawb.
+  if (!entry.wpId) {
+    const state = document.createElement("button");
+    state.className = "thumb-state";
+    state.type = "button";
+    const complete = isUploadable(entry);
+    state.dataset.state = complete ? "pending" : "incomplete";
+    state.title = complete
+      ? "Not yet on Pawb — click to retry"
+      : "Set title and venue to add it to Pawb";
+    state.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (complete) retrySync(entry);
+      else openEditor(entry);
+    });
+    fig.appendChild(state);
   }
-  state.addEventListener("click", (e) => {
-    e.stopPropagation(); // don't select / enlarge
-    cycleUploadState(entry);
-  });
-  fig.appendChild(state);
 
   fig.addEventListener("click", (e) => {
     e.stopPropagation(); // selecting an item shouldn't also refocus its group
@@ -541,7 +685,7 @@ function isImageDrag(dt) {
   );
 }
 
-// --- Interactions --------------------------------------------------------
+// --- Interactions ------------------------------------------------------------
 
 function selectThumb(id) {
   selectedId = id;
@@ -591,10 +735,10 @@ function closeLightbox() {
   lightboxImg.removeAttribute("src");
 }
 
-// --- Metadata editor -----------------------------------------------------
+// --- Metadata editor ----------------------------------------------------------
 
-// Effective values fall back to scraped data so the editor shows useful
-// defaults and tooltips read naturally.
+// Effective title/venue. Pawb-backed entries always have these set directly;
+// a freshly-captured local entry falls back to whatever content.js scraped.
 function displayTitle(entry) {
   return entry.title || entry.event?.name || "";
 }
@@ -623,16 +767,14 @@ function specificPageUrl(url) {
   }
 }
 
-// Fill the venue autocomplete from the server's persisted registry plus any
-// venues on the currently-loaded captures (covers pending/offline ones the
-// server hasn't recorded yet). De-duplicated case-insensitively, sorted.
-function populateVenueSuggestions(captures, venues) {
+// Fill the venue autocomplete from the currently-loaded entries (Pawb-backed
+// and local). De-duplicated case-insensitively, sorted.
+function populateVenueSuggestions(captures) {
   const byLower = new Map(); // lowercase -> first-seen spelling
   const add = (v) => {
     const name = (v || "").trim();
     if (name && !byLower.has(name.toLowerCase())) byLower.set(name.toLowerCase(), name);
   };
-  for (const v of venues) add(v);
   for (const entry of captures) add(displayVenue(entry));
 
   const sorted = [...byLower.values()].sort((a, b) =>
@@ -744,6 +886,15 @@ function openEditor(entry) {
   editorEndDate.min = startDate; // can't end before it starts
   editorDtinfo.value = entry.dtinfo || "";
   editorUrl.value = displayUrl(entry);
+
+  // Recurring events' dates come from WordPress's recurrence rules, not a
+  // literal stored date — editing them here would overwrite the pattern's
+  // origin date with today's computed next-occurrence date. Disable date
+  // editing for those; everything else stays editable.
+  editorStart.disabled = !!entry.recurring;
+  editorEndDate.disabled = !!entry.recurring;
+  editorRecurringNote.hidden = !entry.recurring;
+
   showDuplicateWarning(entry);
 
   lightboxImg.src = imageSrc(entry);
@@ -754,7 +905,7 @@ function openEditor(entry) {
 }
 
 // If this poster was flagged as a likely duplicate, warn with the title (if
-// any) and date of the matched (first-found) poster.
+// any) and date of the matched poster.
 function showDuplicateWarning(entry) {
   const dup = entry.duplicateOf ? entriesById.get(entry.duplicateOf) : null;
   if (!dup) {
@@ -777,26 +928,6 @@ function closeEditor() {
   editingId = null;
 }
 
-async function saveMetadata(id, fields) {
-  try {
-    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(fields),
-    });
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-  } catch {
-    // Offline: normalize the way the server would (blanks -> null).
-    const patch = {};
-    for (const [k, v] of Object.entries(fields)) {
-      patch[k] = typeof v === "string" && v.trim() === "" ? null : v;
-    }
-    await patchLocalEntry(id, patch);
-    showStatus("Server offline — details saved locally.");
-  }
-  await render();
-}
-
 function setFocusedDate(key) {
   focusedDate = key;
   for (const el of catalogEl.querySelectorAll(".date-group.focused")) {
@@ -807,10 +938,10 @@ function setFocusedDate(key) {
 }
 
 function toggleFilter(toState) {
-    filterInitial = !!(toState==null ? !filterInitial : toState);
-    render();
-    filterBtn.classList.toggle("active", filterInitial);
-    filterBtn.setAttribute("aria-pressed", String(filterInitial));
+  filterInvalid = !!(toState == null ? !filterInvalid : toState);
+  render();
+  filterBtn.classList.toggle("active", filterInvalid);
+  filterBtn.setAttribute("aria-pressed", String(filterInvalid));
 }
 
 function wireControls() {
@@ -824,13 +955,10 @@ function wireControls() {
   // Expand every month section so the whole catalog is visible at once.
   expandBtn.addEventListener("click", expandAllMonths);
 
-  // Filter toggle: narrow the view to events still awaiting upload.
+  // Filter toggle: narrow the view to items not yet on Pawb.
   filterBtn.addEventListener("click", () => toggleFilter());
 
-  turnOffFilterBtn.addEventListener("click", ()=>toggleFilter(false))
-
-  // Publish all still-initial events to the external site.
-  uploadBtn.addEventListener("click", uploadInitial);
+  turnOffFilterBtn.addEventListener("click", () => toggleFilter(false));
 
   // Clicking the overlay dismisses a plain enlarge, but not while editing
   // (only Save/Cancel close the editor there).
@@ -845,24 +973,31 @@ function wireControls() {
   editorForm.addEventListener("submit", (e) => {
     e.preventDefault();
     if (!editingId) return;
-    const id = editingId;
+    const entry = entriesById.get(editingId);
+    if (!entry) {
+      closeEditor();
+      return;
+    }
     // The single start field is "YYYY-MM-DDTHH:MM"; split it back into the
     // separately-stored date (grouping key) and time (display-only) values.
     const { date, time } = splitStart(editorStart.value);
     const end = editorEndDate.value;
-    saveMetadata(id, {
+    const fields = {
       title: editorTitle.value,
       venue: editorVenue.value,
       dtinfo: editorDtinfo.value,
       url: editorUrl.value,
-      assignedDate: isDateString(date) ? date : null,
-      assignedTime: isTimeString(time) ? time : null,
+    };
+    if (!entry.recurring) {
+      fields.assignedDate = isDateString(date) ? date : null;
+      fields.assignedTime = isTimeString(time) ? time : null;
       // Only keep an end date that's a real date after the start; anything else
       // (blank, or on/before the start) means single-day.
-      assignedEndDate:
-        isDateString(end) && isDateString(date) && end > date ? end : null,
-    });
+      fields.assignedEndDate =
+        isDateString(end) && isDateString(date) && end > date ? end : null;
+    }
     closeEditor();
+    syncEntry(entry, fields);
   });
   editorCancel.addEventListener("click", closeEditor);
   // Keep the end date from preceding the start as the start is edited.
@@ -920,267 +1055,76 @@ function onKeydown(e) {
   }
 }
 
-// --- Mutations -----------------------------------------------------------
+// --- Writing to Pawb / holding locally ---------------------------------------
 
-async function moveEntry(id, date) {
-  try {
-    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ assignedDate: date }),
-    });
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-  } catch {
-    await patchLocalEntry(id, { assignedDate: date });
-    showStatus("Server offline — move saved locally.");
-  }
-  focusedDate = date;
-  openMonthFor(date);
-  await render();
-}
-
-function confirmDelete(entry) {
-  // Likely-duplicates are expected to be culled on sight, so skip the prompt
-  // for them; everything else confirms before removal.
-  if (entry.duplicateOf) {
-    deleteEntry(entry.id);
-    return;
-  }
-  const label =
-    entry.event?.name ||
-    (entry.caption && entry.caption.trim().slice(0, 60)) ||
-    "this poster";
-  if (window.confirm(`Delete "${label}"?\nThis removes it from the catalog.`)) {
-    deleteEntry(entry.id);
-  }
-}
-
-async function deleteEntry(id) {
-  try {
-    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-    // 404 is fine — it may have only existed locally (pending capture).
-    if (!res.ok && res.status !== 404) throw new Error(`server responded ${res.status}`);
-  } catch {
-    showStatus("Server offline — removed locally.");
-  }
-  await removeLocalEntry(id);
-  closeEditor(); // also hides the lightbox / clears edit state
-  if (selectedId === id) selectedId = null;
-  if (clipboardId === id) clipboardId = null;
-  await render();
-}
-
-async function addDate(date) {
-  try {
-    const res = await apiFetch("/dates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date }),
-    });
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-  } catch {
-    await addLocalDate(date);
-    showStatus("Server offline — date saved locally.");
-  }
-  openMonthFor(date);
-  await render();
-}
-
-async function removeDate(date) {
-  try {
-    const res = await apiFetch(`/dates/${encodeURIComponent(date)}`, {
-      method: "DELETE",
-    });
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-  } catch {
-    // fall through to local removal below
-  }
-  await removeLocalDate(date);
-  if (focusedDate === date) focusedDate = null;
-  await render();
-}
-
-// --- Selective upload ----------------------------------------------------
-
-// An entry's upload state: "omit" or "uploaded" when set, else "initial".
-function uploadStateOf(entry) {
-  return entry.uploadState === "omit" || entry.uploadState === "uploaded"
-    ? entry.uploadState
-    : "initial";
-}
-
-// A poster can only be uploaded once it has both a title and a venue (the
-// effective values, falling back to scraped data). Incomplete ones are skipped
-// by the Upload button and flagged red on their state toggle.
-function isUploadable(entry) {
-  return Boolean(displayTitle(entry).trim() && displayVenue(entry).trim());
-}
-
-// Advance a poster's state one step round the cycle and re-render.
-async function cycleUploadState(entry) {
-  await persistUploadState(entry.id, UPLOAD_CYCLE[uploadStateOf(entry)]);
-  await render();
-}
-
-// Save an entry's upload state (PATCH; falls back to local storage offline).
-async function persistUploadState(id, state) {
-  try {
-    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uploadState: state }),
-    });
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-  } catch {
-    await patchLocalEntry(id, { uploadState: state });
-  }
-}
-
-// Open every currently-rendered month section (and remember it, so the state
-// survives the next re-render).
-function expandAllMonths() {
-  for (const el of catalogEl.querySelectorAll(".month")) {
-    el.classList.remove("collapsed");
-    monthState.set(el.dataset.month, true);
-  }
-}
-
-// Build the Basic-auth header, prompting for (and locally saving) the username
-// and app password the first time. Returns null if the user cancels. WordPress
-// strips non-alphanumerics on auth, so the display spaces in the password are
-// dropped.
-async function getUploadAuth() {
-  let { [UPLOAD_USER_KEY]: user, [UPLOAD_PASSWORD_KEY]: password } =
-    await chrome.storage.local.get([UPLOAD_USER_KEY, UPLOAD_PASSWORD_KEY]);
-  if (!user || !password) {
-    const enteredUser = window.prompt(
-      "gigiau.uk username:\nSaved in this browser only, not in the extension's code.",
-      user || UPLOAD_USER_DEFAULT
-    );
-    if (!enteredUser || !enteredUser.trim()) return null;
-    user = enteredUser.trim();
-    const enteredPass = window.prompt(
-      `Application password for "${user}":\nSaved in this browser only, not in the extension's code.`
-    );
-    if (!enteredPass || !enteredPass.trim()) return null;
-    password = enteredPass.trim();
-    await chrome.storage.local.set({
-      [UPLOAD_USER_KEY]: user,
-      [UPLOAD_PASSWORD_KEY]: password,
-    });
-  }
-  return "Basic " + btoa(`${user}:${password.replace(/\s+/g, "")}`);
-}
-
-// Drop the saved (e.g. wrong) credentials so the next upload prompts again.
-async function forgetUploadCredentials() {
-  await chrome.storage.local.remove([UPLOAD_USER_KEY, UPLOAD_PASSWORD_KEY]);
-}
-
-// Upload every still-initial event to the external site, marking each
-// "uploaded" as it succeeds. Failures are counted and left in the initial state
-// so a retry picks them up again.
-async function uploadInitial() {
-  const captures = await loadCaptures();
-  const initial = captures.filter((e) => uploadStateOf(e) === "initial");
-  // Skip (and leave initial) any missing a title or venue — the red-flagged ones.
-  const pending = initial.filter(isUploadable);
-  const skipped = initial.length - pending.length;
-  if (pending.length === 0) {
-    showStatus(
-      skipped
-        ? `Nothing to upload — ${skipped} event${skipped === 1 ? "" : "s"} still need a title and venue.`
-        : "Nothing to upload — no events in the initial state."
-    );
-    return;
-  }
-  const skipNote = skipped ? ` (${skipped} skipped — no title/venue)` : "";
-  if (
-    !window.confirm(
-      `Upload ${pending.length} event${pending.length === 1 ? "" : "s"} to gigiau.uk?${skipNote}`
-    )
-  ) {
-    return;
-  }
-
-  const auth = await getUploadAuth();
-  if (!auth) {
-    showStatus("Upload cancelled — no credentials entered.");
-    return;
-  }
-
-  uploadBtn.disabled = true;
-  let ok = 0;
-  let failed = 0;
-  let authFailed = false;
-  for (const entry of pending) {
-    showStatus(`Uploading ${ok + failed + 1} of ${pending.length}…`);
-    try {
-      await uploadOne(entry, auth);
-      await persistUploadState(entry.id, "uploaded");
-      ok++;
-    } catch (err) {
-      console.warn(`upload failed for ${entry.id}:`, err);
-      failed++;
-      // A rejected credential won't fix itself mid-run: forget it (so the next
-      // attempt re-prompts) and stop hammering the server.
-      if (err.status === 401 || err.status === 403) {
-        authFailed = true;
-        await forgetUploadCredentials();
-        break;
-      }
-    }
-  }
-  uploadBtn.disabled = false;
-  // Newly-published events won't show on an already-open listing until it
-  // reloads, so refresh any tab showing the site once something went up.
-  if (ok > 0) await refreshUploadTargetTabs();
-  if (failed == 0) {
-    // Switch off filter, as none will be showing now
-    toggleFilter(false);
-  }
-  if (authFailed) {
-    showStatus("Upload failed — the credentials were rejected. Try again to re-enter them.");
-    await render();
-    return;
-  }
-  showStatus(
-    (failed
-      ? `Uploaded ${ok}, ${failed} failed — check the console for details.`
-      : `Uploaded ${ok} event${ok === 1 ? "" : "s"}.`) +
-      (skipped ? ` ${skipped} skipped (no title/venue).` : "")
-  );
-  await render();
-}
-
-// Reload any browser tab currently showing the events listing (the /pawb
-// section of gigiau.uk) so freshly-uploaded posters appear. Best-effort: relies
-// on the site's host permission for tab URLs; failures are non-fatal.
-async function refreshUploadTargetTabs() {
-  try {
-    const tabs = await chrome.tabs.query({ url: "https://gigiau.uk/*" });
-    for (const tab of tabs) {
-      let path;
+// The single entry point for saving any field change (editor save, drag-move,
+// retry). A Pawb-backed entry writes straight through; a local entry that has
+// become valid (title + venue) is created on Pawb immediately and dropped
+// from local storage; otherwise it just stays local, updated in place.
+async function syncEntry(entry, fields) {
+  if (entry.wpId) {
+    await updateRemoteEntry(entry, fields);
+  } else {
+    const merged = { ...entry, ...fields };
+    if (isUploadable(merged)) {
       try {
-        path = new URL(tab.url).pathname.replace(/\/+$/, "");
-      } catch {
-        continue;
+        await createRemoteEntry(merged);
+        await removeLocalEntry(entry.id);
+        await refreshPawbTabs();
+      } catch (err) {
+        console.warn("create on Pawb failed, keeping locally", err);
+        await patchLocalEntry(entry.id, normalizeBlanks(fields));
+        showStatus("Couldn't reach Pawb — kept locally, will retry.");
       }
-      if (path === "/pawb" || path.startsWith("/pawb/")) {
-        await chrome.tabs.reload(tab.id);
-      }
+    } else {
+      await patchLocalEntry(entry.id, normalizeBlanks(fields));
     }
+  }
+  await render();
+}
+
+// Blank strings -> null, same normalization the server used to apply.
+function normalizeBlanks(fields) {
+  const patch = {};
+  for (const [k, v] of Object.entries(fields)) {
+    patch[k] = typeof v === "string" && v.trim() === "" ? null : v;
+  }
+  return patch;
+}
+
+// POST /events/<id> — update an existing Pawb event's editable fields.
+async function updateRemoteEntry(entry, fields) {
+  try {
+    const body = new URLSearchParams();
+    if ("title" in fields) body.set("title", fields.title || "");
+    if ("venue" in fields) body.set("venue", fields.venue || "");
+    if ("dtinfo" in fields) body.set("dtinfo", fields.dtinfo || "");
+    if ("url" in fields) body.set("bookinglink", fields.url || "");
+    if ("assignedDate" in fields || "assignedTime" in fields) {
+      const date = fields.assignedDate ?? eventDateKey(entry);
+      const time = fields.assignedTime ?? eventTimeKey(entry);
+      body.set("dtstart", time ? `${date} ${time}` : date);
+    }
+    if ("assignedEndDate" in fields) {
+      body.set("dtend", fields.assignedEndDate || "");
+    }
+    const res = await pawbFetch(`/events/${entry.wpId}`, { method: "POST", body });
+    if (res.status === 404) {
+      // Someone else already deleted it — nothing to save, just say so; the
+      // next refresh will naturally drop it from the list.
+      showStatus("This poster was removed elsewhere.");
+      return;
+    }
+    if (!res.ok) throw new Error(`Pawb responded ${res.status}`);
+    await refreshPawbTabs();
   } catch (err) {
-    console.warn("could not refresh the gigiau.uk tab(s):", err);
+    console.warn("update failed", err);
+    showStatus("Couldn't save to Pawb — try again.");
   }
 }
 
-// Post a single event to the site's REST API as multipart/form-data. The poster
-// bytes come from the local server (or a pending data URL); the browser sets the
-// multipart Content-Type (with boundary) itself, so we only add the auth header.
-async function uploadOne(entry, auth) {
+// POST /events — create a brand-new Pawb event with the poster image.
+async function createRemoteEntry(entry) {
   const src = imageSrc(entry);
   if (!src) throw new Error("no image to upload");
   const imgRes = await fetch(src);
@@ -1205,21 +1149,16 @@ async function uploadOne(entry, auth) {
   const ext = (blob.type.split("/")[1] || "jpg").replace("jpeg", "jpg");
   form.append("picture", blob, `${entry.id}.${ext}`);
 
-  const res = await fetch(UPLOAD_URL, {
-    method: "POST",
-    headers: { Authorization: auth },
-    body: form,
-  });
+  const res = await pawbFetch("/events", { method: "POST", body: form });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    const err = new Error(`upload responded ${res.status} ${detail.slice(0, 200)}`);
-    err.status = res.status; // let the caller special-case auth rejections
-    throw err;
+    throw new Error(`create responded ${res.status} ${detail.slice(0, 200)}`);
   }
+  return await res.json();
 }
 
-// The event's title for upload; falls back to the caption, then a placeholder,
-// since the API requires a title.
+// The event's title for creation; falls back to the caption, then a
+// placeholder, since Pawb requires a title.
 function uploadTitle(entry) {
   return (
     displayTitle(entry) ||
@@ -1228,14 +1167,113 @@ function uploadTitle(entry) {
   );
 }
 
-// "YYYY-MM-DD" (plus " HH:MM" when a start time is known) for the API's
-// dtstart, using the date the poster is filed under. "" for undated ("unknown")
-// events — the API then defaults them to today.
+// "YYYY-MM-DD" (plus " HH:MM" when a start time is known), using the date the
+// poster is filed under. "" for undated ("unknown") events — Pawb then
+// defaults them to today.
 function uploadStart(entry) {
   const key = dateKey(entry);
   if (key === "unknown") return "";
   const time = eventTimeKey(entry);
   return time ? `${key} ${time}` : key;
+}
+
+async function moveEntry(id, date) {
+  const entry = entriesById.get(id);
+  if (!entry) return;
+  focusedDate = date;
+  openMonthFor(date);
+  await syncEntry(entry, { assignedDate: date });
+}
+
+// Retry creating a local entry on Pawb (e.g. after a create failed offline).
+async function retrySync(entry) {
+  await syncEntry(entry, {});
+}
+
+function confirmDelete(entry) {
+  // Likely-duplicates are expected to be culled on sight, so skip the prompt
+  // for them; everything else confirms before removal.
+  if (entry.duplicateOf) {
+    deleteEntry(entry.id);
+    return;
+  }
+  const label = displayTitle(entry) || (entry.caption && entry.caption.trim().slice(0, 60)) || "this poster";
+  if (window.confirm(`Delete "${label}"?\nThis removes it from the catalog.`)) {
+    deleteEntry(entry.id);
+  }
+}
+
+async function deleteEntry(id) {
+  const entry = entriesById.get(id);
+  if (entry?.wpId) {
+    try {
+      const res = await pawbFetch(`/events/${entry.wpId}`, { method: "DELETE" });
+      // 404 is fine — someone else already removed it.
+      if (!res.ok && res.status !== 404) throw new Error(`Pawb responded ${res.status}`);
+      await refreshPawbTabs();
+    } catch (err) {
+      console.warn("delete failed", err);
+      showStatus("Couldn't reach Pawb — try again.");
+      return; // don't hide it locally; it's still live on Pawb
+    }
+  } else {
+    await removeLocalEntry(id);
+  }
+  closeEditor(); // also hides the lightbox / clears edit state
+  if (selectedId === id) selectedId = null;
+  if (clipboardId === id) clipboardId = null;
+  await render();
+}
+
+async function addDate(date) {
+  await addLocalDate(date);
+  openMonthFor(date);
+  await render();
+}
+
+async function removeDate(date) {
+  await removeLocalDate(date);
+  if (focusedDate === date) focusedDate = null;
+  await render();
+}
+
+// A poster can only go to Pawb once it has both a title and a venue (the
+// effective values, falling back to scraped data). Incomplete ones stay
+// local, flagged red on their state indicator.
+function isUploadable(entry) {
+  return Boolean(displayTitle(entry).trim() && displayVenue(entry).trim());
+}
+
+// Open every currently-rendered month section (and remember it, so the state
+// survives the next re-render).
+function expandAllMonths() {
+  for (const el of catalogEl.querySelectorAll(".month")) {
+    el.classList.remove("collapsed");
+    monthState.set(el.dataset.month, true);
+  }
+}
+
+// Reload any browser tab currently showing the events listing (the /pawb
+// section of gigiau.uk) so a freshly created/edited/deleted poster appears.
+// Best-effort: relies on the site's host permission for tab URLs; failures
+// are non-fatal.
+async function refreshPawbTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: "https://gigiau.uk/*" });
+    for (const tab of tabs) {
+      let path;
+      try {
+        path = new URL(tab.url).pathname.replace(/\/+$/, "");
+      } catch {
+        continue;
+      }
+      if (path === "/pawb" || path.startsWith("/pawb/")) {
+        await chrome.tabs.reload(tab.id);
+      }
+    }
+  } catch (err) {
+    console.warn("could not refresh the gigiau.uk tab(s):", err);
+  }
 }
 
 // --- Local-storage fallbacks ---------------------------------------------
@@ -1257,6 +1295,12 @@ async function removeLocalEntry(id) {
   }
 }
 
+async function storeLocalCapture(entry) {
+  const { [STORAGE_KEY]: local = [] } = await chrome.storage.local.get(STORAGE_KEY);
+  local.unshift(entry);
+  await chrome.storage.local.set({ [STORAGE_KEY]: local });
+}
+
 async function addLocalDate(date) {
   const { [CREATED_DATES_KEY]: local = [] } = await chrome.storage.local.get(
     CREATED_DATES_KEY
@@ -1275,7 +1319,7 @@ async function removeLocalDate(date) {
   });
 }
 
-// --- Prune past events ---------------------------------------------------
+// --- Prune stale local items ----------------------------------------------
 
 // Today as a local YYYY-MM-DD (matches how users think about "out of date",
 // and comparable against the string date keys).
@@ -1287,60 +1331,41 @@ function todayKey() {
   return `${y}-${m}-${day}`;
 }
 
-// Permanently delete captures whose effective date is before today, and drop
+// Drop stale LOCAL (not-yet-on-Pawb) items whose event date has passed, and
 // any now-stale empty user-created dates. Runs once when the panel opens.
+// Never touches Pawb itself: a Pawb-backed event simply stops appearing in
+// GET /events once its own end date passes (server-side date filtering), so
+// there's nothing to delete for those.
 async function pruneOutdated() {
-  const [captures, createdDates] = await Promise.all([
-    loadCaptures(),
-    loadCreatedDates(),
-  ]);
+  const { [STORAGE_KEY]: local = [] } = await chrome.storage.local.get(STORAGE_KEY);
   const today = todayKey();
 
-  const outdated = captures.filter((e) => {
+  const outdated = local.filter((e) => {
     // Judge by the end date for multi-day events, else the start date, so an
     // event still running today isn't removed. "unknown" has no date to judge.
     const key = eventEndDateKey(e) || dateKey(e);
     return key !== "unknown" && key < today;
   });
-  for (const entry of outdated) await purgeCapture(entry.id);
+  for (const entry of outdated) await removeLocalEntry(entry.id);
 
-  // Remove empty created dates in the past; keep any that still hold a poster
-  // (those posters were just deleted above, so recompute what survives).
-  const removedIds = new Set(outdated.map((e) => e.id));
-  const liveKeys = new Set(
-    captures.filter((e) => !removedIds.has(e.id)).map(dateKey)
+  const { [CREATED_DATES_KEY]: createdDates = [] } = await chrome.storage.local.get(
+    CREATED_DATES_KEY
   );
+  if (!createdDates.length) return;
+
+  // A created date might still hold a live Pawb event, so check against the
+  // full merged list, not just what's left locally.
+  const captures = await loadCaptures();
+  const liveKeys = new Set(captures.map(dateKey));
   for (const date of createdDates) {
-    if (date < today && !liveKeys.has(date)) await purgeDate(date);
+    if (date < today && !liveKeys.has(date)) await removeLocalDate(date);
   }
-}
-
-// Delete a capture from the server and local storage without touching the UI
-// (prune runs before the first render).
-async function purgeCapture(id) {
-  try {
-    const res = await apiFetch(`/captures/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-    if (!res.ok && res.status !== 404) throw new Error(`server responded ${res.status}`);
-  } catch {
-    // Offline (or already gone): still drop the local copy below.
-  }
-  await removeLocalEntry(id);
-}
-
-async function purgeDate(date) {
-  try {
-    await apiFetch(`/dates/${encodeURIComponent(date)}`, { method: "DELETE" });
-  } catch {
-    // Offline: local removal below still applies.
-  }
-  await removeLocalDate(date);
 }
 
 // --- Capture by drop -----------------------------------------------------
 
-// Turn an image dropped onto a date group into a capture pinned to that date.
+// Turn an image dropped onto a date group into a local capture pinned to
+// that date (no title, so it's always held locally until edited).
 async function addDroppedImage(dataTransfer, date) {
   try {
     const imageDataUrl = await readDroppedImage(dataTransfer);
@@ -1356,7 +1381,7 @@ async function addDroppedImage(dataTransfer, date) {
 
 // Resolve a drop into an image data URL: a dropped file directly, or the bytes
 // of an image dragged from a page (fetched here — the panel is an extension
-// page with host permissions for Facebook/fbcdn, so it isn't CORS-blocked).
+// page with host permissions for every origin, so it isn't CORS-blocked).
 async function readDroppedImage(dataTransfer) {
   const file = [...(dataTransfer.files || [])].find((f) =>
     f.type.startsWith("image/")
@@ -1404,8 +1429,6 @@ function blobToDataUrl(blob) {
   });
 }
 
-// POST a dropped capture with its date already pinned (assignedDate), so the
-// server skips date parsing and files it under this date.
 async function saveDroppedCapture(imageDataUrl, date) {
   const entry = {
     id: crypto.randomUUID(),
@@ -1413,33 +1436,16 @@ async function saveDroppedCapture(imageDataUrl, date) {
     assignedDate: date,
     imageDataUrl,
   };
-  try {
-    const res = await apiFetch("/captures", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(entry),
-    });
-    if (!res.ok) throw new Error(`server responded ${res.status}`);
-  } catch {
-    // Offline: keep it locally so nothing is lost (mirrors background.js).
-    await storeLocalCapture({ ...entry, pending: true });
-    showStatus("Server offline — poster saved locally.");
-  }
+  await storeLocalCapture(entry);
   focusedDate = date;
   openMonthFor(date);
   await render();
 }
 
-async function storeLocalCapture(entry) {
-  const { [STORAGE_KEY]: local = [] } = await chrome.storage.local.get(STORAGE_KEY);
-  local.unshift(entry);
-  await chrome.storage.local.set({ [STORAGE_KEY]: local });
-}
-
-// --- Helpers -------------------------------------------------------------
+// --- Helpers ---------------------------------------------------------------
 
 function imageSrc(entry) {
-  // entry.imageSrc is a direct (public) S3 URL returned by the API — see aws/.
+  // entry.imageSrc is Pawb's own media URL for a synced entry.
   return entry.imageSrc || entry.imageDataUrl || entry.imageUrl || "";
 }
 

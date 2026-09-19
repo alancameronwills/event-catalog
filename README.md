@@ -1,14 +1,10 @@
 # Event Poster Catalog
 
-Capture event posters from any web page into one shared, date-organized
-catalog with duplicate detection. Right-click a poster (or hover it and press
-**Ctrl+Shift+E**) to save it; a Chrome side panel shows everyone's captures,
-grouped by date.
-
-All captures go straight to a shared AWS backend (see `aws/`), so every
-install — Windows or Mac — sees the same catalog. There's nothing to install
-on the machine besides Chrome itself: no Node.js, no local server, nothing
-to keep running.
+Capture event posters from any web page straight into the Pawb events
+listing (`gigiau.uk/pawb`), with duplicate detection. Right-click a poster
+(or hover it and press **Ctrl+Shift+E** or **Cmd+Shift+E**) to save it; a
+Chrome side panel is an editor for everything currently on Pawb, grouped by
+date.
 
 ## Install (Windows or Mac — identical steps)
 
@@ -28,40 +24,42 @@ to keep running.
    - Click the puzzle-piece icon in Chrome's toolbar, find **Event Poster
      Catalog**, and click its pin icon.
 
-4. **Enter the shared API token.**
+4. **Sign in to Pawb.**
    - Click the extension's icon to open the side panel.
-   - The first time, it prompts for an **API token** — ask whoever set up
-     the shared catalog for this value and paste it in. It's saved in this
-     browser only (`chrome.storage.local`), never written into the
-     extension's code.
+   - The first time it needs to talk to Pawb, it prompts for your
+     **gigiau.uk username** and a WordPress **Application Password** — this
+     is *not* your normal WordPress login password. It's a separate,
+     revocable code for that account (create one under your WordPress profile → Application
+     Passwords — ask whoever administers the site if you don't have an
+     account with edit rights there). Both are saved in this browser only
+     (`chrome.storage.local`), never written into the extension's code.
 
-That's it — the panel should now show the shared catalog.
+That's it — the panel should now show everything currently on Pawb.
 
 ## Using it
 
 - **Capture**: right-click a poster image on any page → **Add to event
-  catalog**, or hover an image and press **Ctrl+Shift+E**.
+  catalog**, or hover an image and press **Ctrl+Shift+E**/**Cmd+Shift+E**.
 - **Organize**: drag a poster onto another date group, or select it (click),
   copy (**Ctrl/Cmd+C**), click a date group, and paste (**Ctrl/Cmd+V**).
 - **Edit**: click a poster to open the editor — title, venue, date/time, and
-  a link, with autocomplete for venues you've used before.
-- Everyone using the same token sees the same catalog, live.
+  a link, with autocomplete for venues you've used before. A poster with a
+  title and venue saves straight to Pawb; anything missing is held on this
+  computer until you fill it in (shown with a red marker; the filter button
+  in the header narrows the view to just these).
+- Everyone with edit access sees the same catalog, live — the panel checks
+  for other people's changes every minute or so while it's open.
 
 ## If something's wrong
 
-- **Catalog looks empty / a capture didn't show up**: the token may be
-  wrong — close and reopen the side panel. A rejected token is forgotten
-  automatically, so you'll be prompted for it again.
-- **No internet, or the shared backend is down**: a capture you make is
-  still saved to this browser's local storage so nothing is lost, but it
-  won't appear in the shared catalog (or anyone else's) until you're back
-  online and capture it again.
-- **Don't have a token**: ask whoever manages the shared catalog for one —
-  see `aws/README.md` ("Wiring up the extension") if that's you.
-
-## For whoever manages the shared catalog
-
-Deploying/redeploying the AWS backend, rotating the token, migrating an old
-local catalog, and cost/operational notes are all in `aws/README.md`. Repo
-internals (data model, extension architecture, the superseded per-machine
-local-server mode) are in `CLAUDE.md`.
+- **Catalog looks empty, or edits don't stick**: your Pawb credentials may
+  be wrong or expired — close and reopen the side panel, or make any edit;
+  a rejected credential is forgotten automatically and you'll be prompted
+  again.
+- **No internet, or Pawb is unreachable**: a capture you make is still saved
+  to this browser's local storage so nothing is lost, but it won't reach
+  Pawb (or show up for anyone else) until you're back online — open the
+  panel again once you are and it'll retry automatically.
+- **Don't have Pawb credentials**: ask whoever administers gigiau.uk for a
+  WordPress account with edit rights, then create an Application Password
+  for it under your WordPress profile.

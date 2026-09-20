@@ -56,7 +56,14 @@ function openPanel(windowId) {
 async function captureImage(tabId, hint) {
   try {
     const capture = await requestCapture(tabId, hint);
-    if (!capture) return;
+    if (!capture) {
+      // content.js couldn't identify a target image (e.g. right-clicked
+      // something that isn't an <img>, like a CSS background image). Without
+      // this the capture just silently does nothing, which looks identical
+      // to the extension not working at all.
+      notifyPanel({ type: "CAPTURE_ERROR", message: "Couldn't find an image there to capture." });
+      return;
+    }
 
     // Fetch the image bytes here in the service worker. Content scripts run in
     // the page's origin and are CORS-blocked from image CDNs (e.g. fbcdn); the

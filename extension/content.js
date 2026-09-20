@@ -18,11 +18,36 @@
 
   let lastHoveredImage = null;
 
+// The true originating element for a mouse event, piercing shadow DOM. Some
+// sites (e.g. the Pawb plugin's own event list, which renders into an open
+// shadow root) put the actual <img> inside a shadow tree; a listener on the
+// outer document sees `e.target` *retargeted* to the shadow host, not the
+// real element, so `e.target.closest("img")` finds nothing (or, worse,
+// leaves a stale previously-tracked image in place, since it never gets
+// overwritten). `composedPath()[0]` is unaffected by that retargeting.
+function eventImage(e) {
+  const el = e.composedPath()[0];
+  return el?.closest ? el.closest("img") : null;
+}
+
 // Track the image under the cursor so the keyboard shortcut has a target.
 document.addEventListener(
   "mouseover",
   (e) => {
-    const img = e.target.closest("img");
+    const img = eventImage(e);
+    if (img) lastHoveredImage = img;
+  },
+  true
+);
+
+// Right-clicking doesn't always fire a fresh "mouseover" first (the cursor
+// may already have been resting on the image from an earlier movement), so
+// also capture the target directly off the contextmenu event itself — this
+// is what makes findTargetImage's element-identity check below reliable.
+document.addEventListener(
+  "contextmenu",
+  (e) => {
+    const img = eventImage(e);
     if (img) lastHoveredImage = img;
   },
   true
@@ -65,12 +90,41 @@ async function buildCapture(hint) {
 // --- Image selection -----------------------------------------------------
 
 function findTargetImage(hint) {
+  // Prefer the actual element the user targeted — tracked via mouseover/
+  // contextmenu above — over a page-wide URL search. The mouseover/
+  // contextmenu listeners fire on the literal element the cursor was over,
+  // so this is right even when the browser-reported srcUrl doesn't line up
+  // with that element's current src/currentSrc (a page can rewrite/lazily
+  // swap image URLs after the initial DOM query), and even when some other
+  // <img> elsewhere on the page happens to share the same URL (e.g. a
+  // "featured" item at the top of the page reusing a thumbnail from a list
+  // further down) — a search-by-URL match would silently grab whichever
+  // copy comes first in the DOM instead of the one actually under the
+  // cursor. Only fall back to searching by URL when nothing was tracked,
+  // e.g. content.js was just injected on demand and never saw the event.
+  if (lastHoveredImage && lastHoveredImage.isConnected) return lastHoveredImage;
   if (hint?.srcUrl) {
-    const match = [...document.images].find((i) => i.currentSrc === hint.srcUrl || i.src === hint.srcUrl);
+    const match = allImages().find((i) => matchesSrc(i, hint.srcUrl));
     if (match) return match;
   }
-  if (lastHoveredImage && lastHoveredImage.isConnected) return lastHoveredImage;
   return null;
+}
+
+function matchesSrc(img, url) {
+  return img.currentSrc === url || img.src === url;
+}
+
+// document.images only sees the light DOM — walk open shadow roots too (see
+// eventImage() above for why a page might have one), since this fallback is
+// the only thing standing in for the shadow-aware, cursor-tracked path above
+// when nothing was tracked yet (e.g. content.js was just injected on demand
+// and never saw the mouseover/contextmenu event).
+function allImages(root = document, out = []) {
+  out.push(...root.querySelectorAll("img"));
+  for (const el of root.querySelectorAll("*")) {
+    if (el.shadowRoot) allImages(el.shadowRoot, out);
+  }
+  return out;
 }
 
 // Facebook often renders a downscaled version; prefer the source set's largest

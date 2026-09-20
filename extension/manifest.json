@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Event Poster Catalog",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Assisted capture of event posters from any web page into a local, date-organized catalog with duplicate detection.",
   "permissions": [
     "contextMenus",

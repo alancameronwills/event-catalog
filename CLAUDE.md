@@ -88,7 +88,22 @@ origin date.
   result to the panel via a `CAPTURE_ADDED` message; the panel owns every
   persistence decision.
 - `content.js` — runs on every page; finds the image, picks best-resolution
-  from `srcset`, scrapes caption + structured event data.
+  from `srcset`, scrapes caption + structured event data. **Image selection**
+  identifies the target by tracking the actual element the cursor was over
+  (`mouseover`/`contextmenu` listeners on `document`, capture phase) rather
+  than re-searching the page for an `<img>` whose `src` matches the
+  right-click's reported `srcUrl` — a page can have more than one `<img>`
+  with the same URL (e.g. a "featured" item reusing a thumbnail from a list
+  below it), and a URL search would silently grab the wrong copy. Those
+  listeners read `event.composedPath()[0]`, not `event.target`: events
+  crossing a shadow-DOM boundary get `target` *retargeted* to the shadow
+  host, so a plain `e.target.closest("img")` finds nothing for elements
+  inside a shadow root (e.g. the Pawb plugin's own event list on
+  `moylgrove.wales`, which client-side-renders into `capsule.attachShadow({
+  mode: "open" })`) — `composedPath()` isn't affected by that retargeting.
+  The URL-search path (used as a fallback only when nothing has been
+  tracked, e.g. right after an on-demand injection) has its own shadow-aware
+  walk (`allImages()`) since `document.images` also misses shadow content.
   `scrapeEventDetails()` merges most→least reliable: JSON-LD → `og:`/`event:`
   head meta → the visible event-page **header DOM** → document title. On
   logged-in SPA sessions JSON-LD and event:* meta are usually *absent*, so

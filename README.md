@@ -40,6 +40,9 @@ That's it — the panel should now show everything currently on Pawb.
 
 - **Capture**: right-click a poster image on any page → **Add to event
   catalog**, or hover an image and press **Ctrl+Shift+E**/**Cmd+Shift+E**.
+  You can also copy an image (e.g. **Copy Image** on a web page, or copy a
+  file) and click the **Paste** button in the panel header — it opens as a
+  new event, ready to edit.
 - **Organize**: drag a poster onto another date group, or select it (click),
   copy (**Ctrl/Cmd+C**), click a date group, and paste (**Ctrl/Cmd+V**).
 - **Edit**: click a poster to open the editor — title, venue, date/time, and

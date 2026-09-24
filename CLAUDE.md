@@ -9,13 +9,15 @@ A personal "assisted capture" tool for saving event posters into a WordPress
 site's event listing, with duplicate detection.
 
 - **`extension/`** — a Chrome MV3 extension. Right-click (or Ctrl+Shift+E) a
-  poster on *any* web page to capture it; a side panel is an editor for
-  everything currently on the site. The content script runs on `<all_urls>`
-  and `host_permissions` is `http(s)://*/*` (the service worker needs it to
-  fetch image bytes from any CDN, and the panel needs it to fetch poster
-  images for hashing/upload). Capture and generic scraping (image, caption,
-  JSON-LD Event) work everywhere; the Facebook-specific enrichment stays
-  gated to FB event pages (`onEventPage()`).
+  poster on *any* web page to capture it, or click the side panel header's
+  **Paste** button to capture whatever image is currently on the system
+  clipboard; a side panel is an editor for everything currently on the site.
+  The content script runs on `<all_urls>` and `host_permissions` is
+  `http(s)://*/*` (the service worker needs it to fetch image bytes from any
+  CDN, and the panel needs it to fetch poster images for hashing/upload); the
+  panel also has the `clipboardRead` permission for the Paste button. Capture
+  and generic scraping (image, caption, JSON-LD Event) work everywhere; the
+  Facebook-specific enrichment stays gated to FB event pages (`onEventPage()`).
 
 **There is no custom backend.** The extension talks straight to Pawb
 (`gigiau.uk/pawb`), a WordPress site running the `gigiau-events-posters`
@@ -192,6 +194,15 @@ origin date.
       page with blanket `host_permissions`, so it isn't CORS-blocked the way
       a content script would be. A document-level drop guard stops a stray
       drop from navigating the panel to the image URL.
+    - **Paste-to-add** — the header's Paste button (`pasteFromClipboard()`)
+      reads `navigator.clipboard.read()` for an `image/*` item and, if found,
+      captures it the same way a right-click capture is handled
+      (`addNewLocalCapture()`, shared with the `CAPTURE_ADDED` listener):
+      held locally, editor opened immediately in "new capture" mode so
+      Cancel/Escape discards it if unused. No image on the clipboard is a
+      silent no-op — there's no capture-date context to pin it to (unlike a
+      date-group drop), so it's grouped like any other undated capture (by
+      `capturedAt`, i.e. today) until assigned a date in the editor.
 
 Facebook's DOM changes often — the image path is robust, but caption/date
 scraping is expected to need occasional maintenance.

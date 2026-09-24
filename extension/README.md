@@ -24,6 +24,10 @@ WordPress Application Password) and writes back with `POST`/`DELETE
 
 - **Right-click** any image on any page → **Add to event catalog**.
 - Or hover an image and press **Ctrl+Shift+E**.
+- Or copy an image to the system clipboard (e.g. **Copy Image** on a web
+  page) and click the **Paste** button in the panel header — this is
+  unrelated to the Ctrl/Cmd+V used to move an existing item between dates
+  (see "Organizing by date" below); no image on the clipboard is a no-op.
 - The side panel shows every event on Pawb, grouped by date (newest month
   first, current month expanded by default).
 

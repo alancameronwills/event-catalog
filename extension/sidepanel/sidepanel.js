@@ -35,6 +35,7 @@ const statusEl = document.getElementById("status");
 const hintEl = document.getElementById("hint");
 const expandBtn = document.getElementById("expand-btn");
 const filterBtn = document.getElementById("filter-btn");
+const pasteBtn = document.getElementById("paste-btn");
 const turnOffFilterBtn = document.getElementById("turnOffFilter");
 const addDateForm = document.getElementById("add-date-form");
 const addDateInput = document.getElementById("add-date-input");
@@ -157,19 +158,22 @@ function startPolling() {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "CAPTURE_ADDED") {
     if (!message.entry) return;
-    // Held locally until the user completes and saves it (see syncEntry).
-    openMonthFor(dateKey(message.entry));
-    storeLocalCapture(message.entry)
-      .then(() => render())
-      .then(() =>
-        openEditor(entriesById.get(message.entry.id) || message.entry, {
-          isNewCapture: true,
-        })
-      );
+    addNewLocalCapture(message.entry);
   } else if (message.type === "CAPTURE_ERROR") {
     showStatus(`Capture failed: ${message.message}`);
   }
 });
+
+// Hold a freshly-captured entry locally (until title/venue make it
+// uploadable — see syncEntry) and open it in the editor right away. Shared by
+// the right-click/keyboard capture flow (via CAPTURE_ADDED) and clipboard
+// paste.
+function addNewLocalCapture(entry) {
+  openMonthFor(dateKey(entry));
+  storeLocalCapture(entry)
+    .then(() => render())
+    .then(() => openEditor(entriesById.get(entry.id) || entry, { isNewCapture: true }));
+}
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && (changes[STORAGE_KEY] || changes[CREATED_DATES_KEY])) {
@@ -985,6 +989,10 @@ function wireControls() {
 
   turnOffFilterBtn.addEventListener("click", () => toggleFilter(false));
 
+  // Header Paste button: new event from whatever image is on the system
+  // clipboard right now. No image there -> no-op.
+  pasteBtn.addEventListener("click", pasteFromClipboard);
+
   // Clicking the overlay dismisses a plain enlarge, but not while editing
   // (only Save/Cancel close the editor there).
   lightboxEl.addEventListener("click", (e) => {
@@ -1452,6 +1460,33 @@ function blobToDataUrl(blob) {
     reader.onerror = () => reject(reader.error || new Error("could not read image"));
     reader.readAsDataURL(blob);
   });
+}
+
+// Header Paste button: read the system clipboard for an image and, if there
+// is one, capture it as a new (unfiled — lands under today, like any other
+// undated capture) local entry opened straight in the editor. No image on
+// the clipboard, or the browser refusing clipboard access, is a silent no-op
+// — there's nothing useful to tell the user beyond "nothing happened".
+async function pasteFromClipboard() {
+  let items;
+  try {
+    items = await navigator.clipboard.read();
+  } catch (err) {
+    console.warn("clipboard read failed", err);
+    return;
+  }
+  for (const item of items) {
+    const type = item.types.find((t) => t.startsWith("image/"));
+    if (!type) continue;
+    const blob = await item.getType(type);
+    const imageDataUrl = await blobToDataUrl(blob);
+    addNewLocalCapture({
+      id: crypto.randomUUID(),
+      capturedAt: new Date().toISOString(),
+      imageDataUrl,
+    });
+    return;
+  }
 }
 
 async function saveDroppedCapture(imageDataUrl, date) {
